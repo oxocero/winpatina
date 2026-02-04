@@ -28,7 +28,7 @@ WinPatina enables modern terminal applications that emit VT/ANSI escape sequence
 ### Requirements
 
 - CMake 3.10+
-- C++17 compiler (MSVC 2017+, MinGW-w64 8+)
+- C++17 compiler (MinGW-w64 8+)
 
 ### Build Commands
 
@@ -91,15 +91,15 @@ int main() {
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     winpatina.exe                       │
-├─────────────────────────────────────────────────────────┤
+┌───────────────────────────────────────────────────────────┐
+│  winpatina.exe                                            │
+├───────────────────────────────────────────────────────────┤
 │  Capability Detector → VT Passthrough / Win32 Translation │
-├─────────────────────────────────────────────────────────┤
-│  VT Parser → Screen Buffer → Win32 Renderer             │
-├─────────────────────────────────────────────────────────┤
-│  Input Handler → VT Input Generator                     │
-└─────────────────────────────────────────────────────────┘
+├───────────────────────────────────────────────────────────┤
+│  VT Parser → Screen Buffer → Win32 Renderer               │
+├───────────────────────────────────────────────────────────┤
+│  Input Handler → VT Input Generator                       │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ## Limitations
@@ -111,7 +111,7 @@ int main() {
 
 ## Licence
 
-Public Domain / MIT License (your choice)
+MIT Licence
 
 ## Acknowledgements
 
