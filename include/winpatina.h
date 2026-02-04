@@ -28,6 +28,23 @@ extern "C" {
 #define WINPATINA_VERSION_MINOR 0
 #define WINPATINA_VERSION_PATCH 0
 
+/**
+ * @brief Get version as a single integer
+ *
+ * Format: (major * 10000) + (minor * 100) + patch
+ * Example: version 1.2.3 returns 10203
+ *
+ * @return Version number
+ */
+int wp_version(void);
+
+/**
+ * @brief Get version as a string
+ *
+ * @return Version string (e.g., "1.0.0")
+ */
+const char* wp_version_string(void);
+
 /*============================================================================
  * Operating Modes
  *============================================================================*/
@@ -406,5 +423,9 @@ void wp_set_mouse_enabled(WinPatina* wp, bool enabled);
  * @endcode
  */
 const char* wp_get_error(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* WINPATINA_H */
