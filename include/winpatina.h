@@ -108,4 +108,45 @@ typedef enum {
     WP_CAP_SYNC_OUTPUT   = 0x0200   /**< Synchronised output (reduces flicker) */
 } WinPatinaCapability;
 
+/*============================================================================
+ * Configuration
+ *============================================================================*/
+
+/**
+ * @brief Configuration options for WinPatina initialisation
+ *
+ * Zero-initialise for sensible defaults:
+ * @code
+ * WinPatinaConfig config = {0};
+ * @endcode
+ */
+typedef struct {
+    /** Force Win32 translation mode even if VT is available (for testing) */
+    bool force_translation;
+
+    /** Enable mouse input translation */
+    bool enable_mouse;
+
+    /** Enable UTF-8 codepage if available (default: true when zero-init) */
+    bool enable_utf8;
+
+    /**
+     * Colour mode: 0 = auto-detect, 16 = force 16-colour, 256 = force 256-colour
+     * In translation mode, 256 colours are quantised to 16.
+     */
+    int colour_mode;
+} WinPatinaConfig;
+
+/*============================================================================
+ * Opaque Handle
+ *============================================================================*/
+
+/**
+ * @brief Opaque handle to a WinPatina instance
+ *
+ * Created with wp_init(), destroyed with wp_destroy().
+ * The internal structure is hidden from users.
+ */
+typedef struct WinPatina WinPatina;
+
 #endif /* WINPATINA_H */
