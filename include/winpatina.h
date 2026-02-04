@@ -149,4 +149,93 @@ typedef struct {
  */
 typedef struct WinPatina WinPatina;
 
+/*============================================================================
+ * Core API - Lifecycle
+ *============================================================================*/
+
+/**
+ * @brief Initialise WinPatina
+ *
+ * Detects terminal capabilities and sets up the console for operation.
+ *
+ * @param config Configuration options (NULL for defaults)
+ * @return Handle to WinPatina instance, or NULL on failure
+ *
+ * @code
+ * WinPatinaConfig config = {0};
+ * config.enable_mouse = true;
+ * WinPatina* wp = wp_init(&config);
+ * if (!wp) {
+ *     fprintf(stderr, "Failed to initialise WinPatina\n");
+ *     return 1;
+ * }
+ * @endcode
+ */
+WinPatina* wp_init(const WinPatinaConfig* config);
+
+/**
+ * @brief Clean up and destroy WinPatina instance
+ *
+ * Restores the console to its original state and frees all resources.
+ * Safe to call with NULL.
+ *
+ * @param wp Handle to destroy (may be NULL)
+ */
+void wp_destroy(WinPatina* wp);
+
+/*============================================================================
+ * Core API - Capability Queries
+ *============================================================================*/
+
+/**
+ * @brief Get the operating mode
+ *
+ * @param wp WinPatina handle
+ * @return The detected operating mode
+ */
+WinPatinaMode wp_get_mode(WinPatina* wp);
+
+/**
+ * @brief Get the detected Windows version
+ *
+ * @param wp WinPatina handle
+ * @return The detected Windows version
+ */
+WinPatinaWindowsVersion wp_get_windows_version(WinPatina* wp);
+
+/**
+ * @brief Get the detected terminal type
+ *
+ * @param wp WinPatina handle
+ * @return The detected terminal type
+ */
+WinPatinaTerminalType wp_get_terminal_type(WinPatina* wp);
+
+/**
+ * @brief Get capability flags
+ *
+ * @param wp WinPatina handle
+ * @return Bitmask of WinPatinaCapability flags
+ *
+ * @code
+ * uint32_t caps = wp_get_capabilities(wp);
+ * if (caps & WP_CAP_MOUSE) {
+ *     printf("Mouse input is available\n");
+ * }
+ * if (caps & WP_CAP_TRUECOLOUR) {
+ *     printf("24-bit colour is available\n");
+ * }
+ * @endcode
+ */
+uint32_t wp_get_capabilities(WinPatina* wp);
+
+/**
+ * @brief Get current screen dimensions
+ *
+ * @param wp WinPatina handle
+ * @param[out] width Receives the screen width in columns
+ * @param[out] height Receives the screen height in rows
+ */
+void wp_get_screen_size(WinPatina* wp, int* width, int* height);
+
 #endif /* WINPATINA_H */
