@@ -362,4 +362,49 @@ int wp_write_child(WinPatina* wp, const char* data, int len);
  */
 void wp_refresh(WinPatina* wp);
 
+/*============================================================================
+ * Core API - Terminal Control
+ *============================================================================*/
+
+/**
+ * @brief Set the console window title
+ *
+ * @param wp WinPatina handle
+ * @param title New window title (UTF-8 encoded)
+ */
+void wp_set_title(WinPatina* wp, const char* title);
+
+/**
+ * @brief Enable or disable mouse input
+ *
+ * When enabled, mouse events are translated to VT sequences and sent to
+ * the child process. Can be toggled at runtime.
+ *
+ * @param wp WinPatina handle
+ * @param enabled true to enable mouse input, false to disable
+ */
+void wp_set_mouse_enabled(WinPatina* wp, bool enabled);
+
+/*============================================================================
+ * Core API - Error Handling
+ *============================================================================*/
+
+/**
+ * @brief Get the last error message
+ *
+ * Returns a human-readable description of the last error. The message is
+ * stored in thread-local storage, so it's safe to call from multiple threads.
+ *
+ * @return Error message string, or NULL if no error has occurred
+ *
+ * @code
+ * WinPatina* wp = wp_init(&config);
+ * if (!wp) {
+ *     fprintf(stderr, "Failed to initialise: %s\n", wp_get_error());
+ *     return 1;
+ * }
+ * @endcode
+ */
+const char* wp_get_error(void);
+
 #endif /* WINPATINA_H */
