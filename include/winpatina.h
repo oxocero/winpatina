@@ -238,4 +238,128 @@ uint32_t wp_get_capabilities(WinPatina* wp);
  */
 void wp_get_screen_size(WinPatina* wp, int* width, int* height);
 
+/*============================================================================
+ * Core API - Process Management
+ *============================================================================*/
+
+/**
+ * @brief Spawn a child process
+ *
+ * Launches the specified command with its stdin/stdout redirected through
+ * WinPatina. The child's VT output will be translated (if needed) and
+ * rendered to the console.
+ *
+ * @param wp WinPatina handle
+ * @param command Path to the executable
+ * @param argv Argument array (NULL-terminated, argv[0] is typically the program name)
+ * @return 0 on success, -1 on failure
+ *
+ * @code
+ * char* argv[] = {"myapp", "--option", NULL};
+ * if (wp_spawn(wp, "myapp.exe", argv) != 0) {
+ *     fprintf(stderr, "Failed to spawn process\n");
+ * }
+ * @endcode
+ */
+int wp_spawn(WinPatina* wp, const char* command, char* const argv[]);
+
+/**
+ * @brief Spawn the default shell
+ *
+ * Convenience function to spawn cmd.exe or the shell specified by COMSPEC.
+ *
+ * @param wp WinPatina handle
+ * @return 0 on success, -1 on failure
+ */
+int wp_spawn_shell(WinPatina* wp);
+
+/**
+ * @brief Check if the child process is still running
+ *
+ * @param wp WinPatina handle
+ * @return true if child is running, false if exited or not spawned
+ */
+bool wp_is_running(WinPatina* wp);
+
+/**
+ * @brief Get the child process exit code
+ *
+ * Only valid after wp_is_running() returns false.
+ *
+ * @param wp WinPatina handle
+ * @return Exit code, or -1 if child is still running or was never spawned
+ */
+int wp_get_exit_code(WinPatina* wp);
+
+/*============================================================================
+ * Core API - Main Loop
+ *============================================================================*/
+
+/**
+ * @brief Process events (non-blocking or with timeout)
+ *
+ * Reads console input, sends to child, reads child output, renders to screen.
+ * Call this repeatedly in your own event loop.
+ *
+ * @param wp WinPatina handle
+ * @param timeout_ms Maximum time to wait for events:
+ *                   - 0 = non-blocking (return immediately)
+ *                   - >0 = wait up to this many milliseconds
+ *                   - -1 = wait indefinitely
+ * @return 1 if child exited, 0 if still running, -1 on error
+ *
+ * @code
+ * while (wp_poll(wp, 100) == 0) {
+ *     // Child still running, poll returned after timeout or event
+ * }
+ * int exit_code = wp_get_exit_code(wp);
+ * @endcode
+ */
+int wp_poll(WinPatina* wp, int timeout_ms);
+
+/**
+ * @brief Run the main loop until child exits
+ *
+ * Convenience function that calls wp_poll() in a loop until the child
+ * process terminates. This is a blocking call.
+ *
+ * @param wp WinPatina handle
+ * @return Child's exit code, or -1 on error
+ *
+ * @code
+ * wp_spawn(wp, "myapp.exe", argv);
+ * int exit_code = wp_run(wp);
+ * printf("Child exited with code %d\n", exit_code);
+ * @endcode
+ */
+int wp_run(WinPatina* wp);
+
+/*============================================================================
+ * Core API - Direct I/O
+ *============================================================================*/
+
+/**
+ * @brief Write data directly to the child's stdin
+ *
+ * Bypasses normal input handling. Useful for injecting commands or data
+ * programmatically.
+ *
+ * @param wp WinPatina handle
+ * @param data Data to write
+ * @param len Length of data in bytes
+ * @return Number of bytes written, or -1 on error
+ */
+int wp_write_child(WinPatina* wp, const char* data, int len);
+
+/**
+ * @brief Force a full screen refresh
+ *
+ * Redraws the entire screen. Useful after window corruption or resize.
+ * In translation mode, this re-renders from the internal screen buffer.
+ * In passthrough mode, this is a no-op (the terminal handles it).
+ *
+ * @param wp WinPatina handle
+ */
+void wp_refresh(WinPatina* wp);
+
 #endif /* WINPATINA_H */
