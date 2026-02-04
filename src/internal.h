@@ -89,4 +89,69 @@ typedef struct {
     int screen_height;                  /**< Console height in rows */
 } WinPatinaCapabilities;
 
+/**
+ * @brief Main WinPatina instance structure
+ *
+ * This is the actual definition of the opaque WinPatina handle.
+ * Users only see a pointer; implementation files see the contents.
+ */
+struct WinPatina {
+    /* Detected capabilities */
+    WinPatinaCapabilities caps;
+
+    /* User configuration (copy of what was passed to wp_init) */
+    WinPatinaConfig config;
+
+    /* Console handles */
+    HANDLE hConsoleOutput;              /**< Standard output handle */
+    HANDLE hConsoleInput;               /**< Standard input handle */
+
+    /* Original console modes (to restore on cleanup) */
+    DWORD original_output_mode;
+    DWORD original_input_mode;
+
+    /* Original console codepages (to restore on cleanup) */
+    UINT original_output_cp;
+    UINT original_input_cp;
+};
+
+/*============================================================================
+ * Internal Functions - Error Handling
+ *============================================================================*/
+
+/**
+ * @brief Set the last error message
+ *
+ * Stores the message in thread-local storage for retrieval via wp_get_error().
+ *
+ * @param message Error message (will be copied)
+ */
+void wp_set_error(const char* message);
+
+/**
+ * @brief Set error message with Win32 error code
+ *
+ * Formats a message that includes the Win32 error description.
+ *
+ * @param message Prefix message
+ * @param error_code Win32 error code from GetLastError()
+ */
+void wp_set_error_win32(const char* message, DWORD error_code);
+
+/*============================================================================
+ * Internal Functions - Capability Detection
+ *============================================================================*/
+
+/**
+ * @brief Detect system capabilities
+ *
+ * Probes the system to determine Windows version, terminal type,
+ * and available features. Called during wp_init().
+ *
+ * @param[out] caps Structure to fill with detected capabilities
+ * @param config User configuration (may affect detection)
+ * @return true on success, false on failure
+ */
+bool wp_detect_capabilities(WinPatinaCapabilities* caps, const WinPatinaConfig* config);
+
 #endif /* WINPATINA_INTERNAL_H */
