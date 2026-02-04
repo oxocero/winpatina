@@ -86,4 +86,26 @@ typedef enum {
     WP_TERM_UNKNOWN           /**< Could not determine */
 } WinPatinaTerminalType;
 
+/*============================================================================
+ * Capability Flags
+ *============================================================================*/
+
+/**
+ * @brief Capability bit flags
+ *
+ * These can be combined with bitwise OR. Query with wp_get_capabilities().
+ */
+typedef enum {
+    WP_CAP_VT_PROCESSING = 0x0001,  /**< ENABLE_VIRTUAL_TERMINAL_PROCESSING works */
+    WP_CAP_VT_INPUT      = 0x0002,  /**< ENABLE_VIRTUAL_TERMINAL_INPUT works */
+    WP_CAP_UTF8_CODEPAGE = 0x0004,  /**< UTF-8 codepage (65001) available */
+    WP_CAP_UNDERSCORE    = 0x0008,  /**< COMMON_LVB_UNDERSCORE available (Vista+) */
+    WP_CAP_GRID_LINES    = 0x0010,  /**< COMMON_LVB_GRID_* available */
+    WP_CAP_256_COLOURS   = 0x0020,  /**< 256-colour palette in VT mode */
+    WP_CAP_TRUECOLOUR    = 0x0040,  /**< 24-bit RGB colour in VT mode */
+    WP_CAP_MOUSE         = 0x0080,  /**< Mouse input available */
+    WP_CAP_ALT_BUFFER    = 0x0100,  /**< Alternate screen buffer works */
+    WP_CAP_SYNC_OUTPUT   = 0x0200   /**< Synchronised output (reduces flicker) */
+} WinPatinaCapability;
+
 #endif /* WINPATINA_H */
