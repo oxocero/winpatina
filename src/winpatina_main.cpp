@@ -19,8 +19,9 @@
 #define WP_ERROR_BUFFER_SIZE 512
 
 /* Thread-local error buffer */
-static __declspec(thread) char tls_error_buffer[WP_ERROR_BUFFER_SIZE];
-static __declspec(thread) bool tls_error_set = false;
+/* Use thread_local (C++11) which works on both MSVC and GCC/MinGW */
+static thread_local char tls_error_buffer[WP_ERROR_BUFFER_SIZE];
+static thread_local bool tls_error_set = false;
 
 void wp_set_error(const char* message)
 {

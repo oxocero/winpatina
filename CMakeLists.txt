@@ -10,6 +10,39 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # =============================================================================
+# Architecture Configuration
+# =============================================================================
+#
+# To build for different architectures:
+#
+# 64-bit (default with mingw64):
+#   cmake -B build64 -G "MinGW Makefiles" \
+#       -DCMAKE_CXX_COMPILER=C:/mingw64/bin/g++.exe \
+#       -DCMAKE_MAKE_PROGRAM=C:/mingw64/bin/mingw32-make.exe
+#
+# 32-bit (requires mingw32 toolchain):
+#   cmake -B build32 -G "MinGW Makefiles" \
+#       -DCMAKE_CXX_COMPILER=C:/mingw32/bin/g++.exe \
+#       -DCMAKE_MAKE_PROGRAM=C:/mingw32/bin/mingw32-make.exe
+#
+# Or download mingw32 from: https://github.com/niXman/mingw-builds-binaries/releases
+# Look for: i686-*-release-posix-dwarf-*.7z (32-bit)
+#
+# =============================================================================
+
+# Detect architecture from compiler
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(WINPATINA_ARCH "x64")
+    message(STATUS "WinPatina: Building for 64-bit (x64)")
+elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(WINPATINA_ARCH "x86")
+    message(STATUS "WinPatina: Building for 32-bit (x86)")
+else()
+    message(WARNING "WinPatina: Unknown architecture, assuming 64-bit")
+    set(WINPATINA_ARCH "x64")
+endif()
+
+# =============================================================================
 # Platform Configuration
 # =============================================================================
 
@@ -25,11 +58,15 @@ if(WIN32)
 
     if(MINGW)
         # MinGW-specific flags for Windows 2000 compatibility
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--subsystem,console:5.0")
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
+        # Note: subsystem 5.0 requires 32-bit; 64-bit Windows started with Vista (6.0)
+        if(WINPATINA_ARCH STREQUAL "x86")
+            set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--subsystem,console:5.0")
+        else()
+            # 64-bit minimum is Windows XP x64 / Server 2003 (5.2)
+            set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--subsystem,console:5.2")
+        endif()
 
-        # Use msvcrt.dll for maximum compatibility (not UCRT)
-        # add_compile_options(-mcrt=msvcrt)  # Uncomment if targeting Win2000
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
     endif()
 
     if(MSVC)
@@ -58,16 +95,21 @@ endif()
 # =============================================================================
 
 set(WINPATINA_SOURCES
-    src/winpatina_detect.cpp
-    src/winpatina_vt_parser.cpp
-    src/winpatina_screen.cpp
-    src/winpatina_colour.cpp
-    src/winpatina_render.cpp
-    src/winpatina_input.cpp
-    src/winpatina_vt_input.cpp
-    src/winpatina_query.cpp
-    src/winpatina_utf8.cpp
+    # Core (implemented)
     src/winpatina_main.cpp
+    src/winpatina_detect.cpp
+
+    # Phase 1 (not yet implemented)
+    # src/winpatina_vt_parser.cpp
+    # src/winpatina_screen.cpp
+    # src/winpatina_colour.cpp
+    # src/winpatina_render.cpp
+
+    # Phase 2 (not yet implemented)
+    # src/winpatina_input.cpp
+    # src/winpatina_vt_input.cpp
+    # src/winpatina_query.cpp
+    # src/winpatina_utf8.cpp
 )
 
 set(WINPATINA_HEADERS
@@ -98,6 +140,14 @@ target_link_libraries(winpatina_lib PRIVATE kernel32 user32)
 
 add_executable(winpatina src/main.cpp)
 target_link_libraries(winpatina PRIVATE winpatina_lib)
+
+# Add architecture suffix to output names
+set_target_properties(winpatina PROPERTIES
+    OUTPUT_NAME "winpatina-${WINPATINA_ARCH}"
+)
+set_target_properties(winpatina_lib PROPERTIES
+    OUTPUT_NAME "winpatina_lib-${WINPATINA_ARCH}"
+)
 
 # =============================================================================
 # Tests
