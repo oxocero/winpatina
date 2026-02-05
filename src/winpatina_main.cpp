@@ -169,3 +169,31 @@ WinPatina* wp_init(const WinPatinaConfig* config)
     return wp;
 }
 
+void wp_destroy(WinPatina* wp)
+{
+    if (wp == NULL) {
+        return;
+    }
+
+    /* Restore original console output mode */
+    if (wp->hConsoleOutput != NULL && wp->hConsoleOutput != INVALID_HANDLE_VALUE) {
+        SetConsoleMode(wp->hConsoleOutput, wp->original_output_mode);
+    }
+
+    /* Restore original console input mode */
+    if (wp->hConsoleInput != NULL && wp->hConsoleInput != INVALID_HANDLE_VALUE) {
+        SetConsoleMode(wp->hConsoleInput, wp->original_input_mode);
+    }
+
+    /* Restore original codepages */
+    if (wp->original_output_cp != 0) {
+        SetConsoleOutputCP(wp->original_output_cp);
+    }
+    if (wp->original_input_cp != 0) {
+        SetConsoleCP(wp->original_input_cp);
+    }
+
+    /* Free the structure */
+    free(wp);
+}
+
