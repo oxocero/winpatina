@@ -197,3 +197,55 @@ void wp_destroy(WinPatina* wp)
     free(wp);
 }
 
+/*============================================================================
+ * Query Functions
+ *============================================================================*/
+
+WinPatinaMode wp_get_mode(WinPatina* wp)
+{
+    if (wp == NULL) {
+        return WP_MODE_WIN32_TRANSLATION;  /* Safe default */
+    }
+    return wp->caps.mode;
+}
+
+WinPatinaWindowsVersion wp_get_windows_version(WinPatina* wp)
+{
+    if (wp == NULL) {
+        return WP_WIN_2000;  /* Safe default */
+    }
+    return wp->caps.os_version;
+}
+
+WinPatinaTerminalType wp_get_terminal_type(WinPatina* wp)
+{
+    if (wp == NULL) {
+        return WP_TERM_UNKNOWN;
+    }
+    return wp->caps.terminal;
+}
+
+uint32_t wp_get_capabilities(WinPatina* wp)
+{
+    if (wp == NULL) {
+        return 0;
+    }
+    return wp->caps.flags;
+}
+
+void wp_get_screen_size(WinPatina* wp, int* width, int* height)
+{
+    if (wp == NULL) {
+        if (width != NULL) *width = 80;
+        if (height != NULL) *height = 25;
+        return;
+    }
+
+    if (width != NULL) {
+        *width = wp->caps.screen_width;
+    }
+    if (height != NULL) {
+        *height = wp->caps.screen_height;
+    }
+}
+
