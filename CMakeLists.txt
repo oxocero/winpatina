@@ -108,6 +108,7 @@ set(WINPATINA_SOURCES
 
     # Phase 2
     src/winpatina_input.cpp
+    src/winpatina_process.cpp
     # src/winpatina_vt_input.cpp
     # src/winpatina_query.cpp
     # src/winpatina_utf8.cpp
@@ -122,6 +123,7 @@ set(WINPATINA_HEADERS
     src/winpatina_dispatch.h
     src/winpatina_render.h
     src/winpatina_input.h
+    src/winpatina_process.h
 )
 
 # =============================================================================

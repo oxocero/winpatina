@@ -35,3 +35,9 @@ add_executable(test_input test_input.cpp)
 target_link_libraries(test_input PRIVATE winpatina_lib)
 target_include_directories(test_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME input COMMAND test_input)
+
+# Process Management tests
+add_executable(test_process test_process.cpp)
+target_link_libraries(test_process PRIVATE winpatina_lib)
+target_include_directories(test_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME process COMMAND test_process)
