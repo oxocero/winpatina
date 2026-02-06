@@ -320,3 +320,322 @@ void wp_get_screen_size(WinPatina* wp, int* width, int* height)
     }
 }
 
+/*============================================================================
+ * Write-Back Callback
+ *
+ * Used by the dispatch handler for DSR responses — writes bytes back
+ * to the child's stdin pipe.
+ *============================================================================*/
+
+static void write_back_to_child(void* wb_data, const uint8_t* data, size_t len)
+{
+    WPProcess* proc = (WPProcess*)wb_data;
+    if (proc == NULL || data == NULL || len == 0) return;
+    wp_process_write(proc, data, (int)len);
+}
+
+/*============================================================================
+ * Process Management
+ *============================================================================*/
+
+int wp_spawn(WinPatina* wp, const char* command, char* const argv[])
+{
+    if (wp == NULL || command == NULL) {
+        wp_set_error("Invalid parameters for wp_spawn");
+        return -1;
+    }
+
+    if (!wp->pipeline_ready) {
+        wp_set_error("Pipeline not ready (passthrough mode?)");
+        return -1;
+    }
+
+    /*
+     * Build a command line from command + argv.
+     * Windows expects a single command line string, not separate args.
+     */
+    char cmdline[4096];
+    int pos = 0;
+
+    /* Start with the command itself */
+    pos += snprintf(cmdline + pos, sizeof(cmdline) - pos, "%s", command);
+
+    /* Append arguments if provided */
+    if (argv != NULL) {
+        for (int i = 0; argv[i] != NULL; i++) {
+            if (pos < (int)sizeof(cmdline) - 1) {
+                pos += snprintf(cmdline + pos, sizeof(cmdline) - pos,
+                                " %s", argv[i]);
+            }
+        }
+    }
+
+    if (!wp_process_spawn(&wp->process, cmdline)) {
+        return -1;
+    }
+
+    /* Wire up DSR write-back so query responses reach the child */
+    wp_dispatch_set_write_back(&wp->dispatch, write_back_to_child,
+                                &wp->process);
+
+    /* Set console input mode for raw reading */
+    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
+        DWORD mode = ENABLE_WINDOW_INPUT;
+        if (wp->config.enable_mouse) {
+            mode |= ENABLE_MOUSE_INPUT;
+        }
+        SetConsoleMode(wp->hConsoleInput, mode);
+    }
+
+    return 0;
+}
+
+int wp_spawn_shell(WinPatina* wp)
+{
+    if (wp == NULL) {
+        wp_set_error("Invalid parameters for wp_spawn_shell");
+        return -1;
+    }
+
+    if (!wp->pipeline_ready) {
+        wp_set_error("Pipeline not ready (passthrough mode?)");
+        return -1;
+    }
+
+    if (!wp_process_spawn_shell(&wp->process)) {
+        return -1;
+    }
+
+    wp_dispatch_set_write_back(&wp->dispatch, write_back_to_child,
+                                &wp->process);
+
+    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
+        DWORD mode = ENABLE_WINDOW_INPUT;
+        if (wp->config.enable_mouse) {
+            mode |= ENABLE_MOUSE_INPUT;
+        }
+        SetConsoleMode(wp->hConsoleInput, mode);
+    }
+
+    return 0;
+}
+
+bool wp_is_running(WinPatina* wp)
+{
+    if (wp == NULL) return false;
+    return wp_process_is_running(&wp->process);
+}
+
+int wp_get_exit_code(WinPatina* wp)
+{
+    if (wp == NULL) return -1;
+    return wp_process_get_exit_code(&wp->process);
+}
+
+/*============================================================================
+ * Main Loop
+ *============================================================================*/
+
+/** Read buffer for child output */
+#define WP_READ_BUF_SIZE 4096
+
+int wp_poll(WinPatina* wp, int timeout_ms)
+{
+    if (wp == NULL) return -1;
+    if (!wp->pipeline_ready) return -1;
+
+    /*
+     * Build an array of handles to wait on:
+     *   [0] = console input handle (keyboard/mouse/resize events)
+     *   [1] = child stdout pipe (output data available)
+     */
+    HANDLE handles[2];
+    DWORD handle_count = 0;
+
+    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
+        handles[handle_count++] = wp->hConsoleInput;
+    }
+
+    HANDLE child_stdout = wp_process_get_stdout_handle(&wp->process);
+    if (child_stdout != NULL) {
+        handles[handle_count++] = child_stdout;
+    }
+
+    if (handle_count == 0) {
+        /* Nothing to wait on */
+        return wp_process_poll(&wp->process) ? 1 : -1;
+    }
+
+    /* Wait for any event */
+    DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
+    DWORD result = WaitForMultipleObjects(handle_count, handles, FALSE, wait_ms);
+
+    /*
+     * Process console input events regardless of which handle signalled.
+     * ReadConsoleInput might have events queued even if the pipe triggered.
+     */
+    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
+        DWORD events_available = 0;
+        GetNumberOfConsoleInputEvents(wp->hConsoleInput, &events_available);
+
+        while (events_available > 0) {
+            INPUT_RECORD ir;
+            DWORD read_count = 0;
+            if (!ReadConsoleInputW(wp->hConsoleInput, &ir, 1, &read_count))
+                break;
+            if (read_count == 0) break;
+            events_available--;
+
+            uint8_t vt_buf[WP_INPUT_BUF_MAX];
+            int vt_len = 0;
+
+            switch (ir.EventType) {
+                case KEY_EVENT:
+                    vt_len = wp_input_translate_key(&wp->input,
+                                                     &ir.Event.KeyEvent,
+                                                     vt_buf);
+                    break;
+
+                case MOUSE_EVENT:
+                    vt_len = wp_input_translate_mouse(&wp->input,
+                                                       &ir.Event.MouseEvent,
+                                                       vt_buf);
+                    break;
+
+                case WINDOW_BUFFER_SIZE_EVENT: {
+                    SHORT new_w = ir.Event.WindowBufferSizeEvent.dwSize.X;
+                    SHORT new_h = ir.Event.WindowBufferSizeEvent.dwSize.Y;
+
+                    /* Update screen size tracking */
+                    wp->caps.screen_width = new_w;
+                    wp->caps.screen_height = new_h;
+
+                    /* Resize screen buffer and renderer */
+                    if (wp->screen != NULL) {
+                        wp_screen_resize(wp->screen, new_w, new_h);
+                        wp_renderer_resize(&wp->renderer);
+                        wp_renderer_paint_all(&wp->renderer);
+                    }
+                    break;
+                }
+
+                default:
+                    break;
+            }
+
+            /* Send translated input to child */
+            if (vt_len > 0) {
+                wp_process_write(&wp->process, vt_buf, vt_len);
+            }
+        }
+    }
+
+    /*
+     * Read child output and feed through the VT pipeline.
+     */
+    if (child_stdout != NULL) {
+        uint8_t read_buf[WP_READ_BUF_SIZE];
+        for (;;) {
+            int n = wp_process_read(&wp->process, read_buf, sizeof(read_buf));
+            if (n <= 0) break;
+
+            /* Feed through parser -> dispatch -> screen buffer */
+            wp_vt_parser_feed(&wp->parser, read_buf, n);
+        }
+    }
+
+    /*
+     * Render any changes to the console.
+     */
+    wp_renderer_paint(&wp->renderer);
+
+    /*
+     * Check if child has exited.
+     */
+    if (wp_process_poll(&wp->process)) {
+        /* Drain any remaining output */
+        if (child_stdout != NULL) {
+            uint8_t read_buf[WP_READ_BUF_SIZE];
+            for (;;) {
+                int n = wp_process_read(&wp->process, read_buf, sizeof(read_buf));
+                if (n <= 0) break;
+                wp_vt_parser_feed(&wp->parser, read_buf, n);
+            }
+            wp_renderer_paint(&wp->renderer);
+        }
+        return 1;  /* Child exited */
+    }
+
+    return 0;  /* Still running */
+}
+
+int wp_run(WinPatina* wp)
+{
+    if (wp == NULL) return -1;
+
+    int status;
+    do {
+        status = wp_poll(wp, 100);
+    } while (status == 0);
+
+    if (status < 0) return -1;
+    return wp_get_exit_code(wp);
+}
+
+/*============================================================================
+ * Direct I/O
+ *============================================================================*/
+
+int wp_write_child(WinPatina* wp, const char* data, int len)
+{
+    if (wp == NULL || data == NULL || len <= 0) return -1;
+    return wp_process_write(&wp->process, (const uint8_t*)data, len);
+}
+
+void wp_refresh(WinPatina* wp)
+{
+    if (wp == NULL) return;
+    if (!wp->pipeline_ready) return;
+    wp_renderer_paint_all(&wp->renderer);
+}
+
+/*============================================================================
+ * Terminal Control
+ *============================================================================*/
+
+void wp_set_title(WinPatina* wp, const char* title)
+{
+    if (wp == NULL || title == NULL) return;
+
+    /* Convert UTF-8 title to wide string */
+    int len = MultiByteToWideChar(CP_UTF8, 0, title, -1, NULL, 0);
+    if (len <= 0) return;
+
+    WCHAR* wide = (WCHAR*)malloc(len * sizeof(WCHAR));
+    if (wide == NULL) return;
+
+    MultiByteToWideChar(CP_UTF8, 0, title, -1, wide, len);
+    SetConsoleTitleW(wide);
+    free(wide);
+}
+
+void wp_set_mouse_enabled(WinPatina* wp, bool enabled)
+{
+    if (wp == NULL) return;
+
+    if (enabled) {
+        wp->input.mouse_mode = WP_MOUSE_NORMAL;
+    } else {
+        wp->input.mouse_mode = WP_MOUSE_OFF;
+    }
+
+    /* Update console input mode */
+    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
+        DWORD mode = ENABLE_WINDOW_INPUT;
+        if (enabled) {
+            mode |= ENABLE_MOUSE_INPUT;
+        }
+        SetConsoleMode(wp->hConsoleInput, mode);
+    }
+}
+
