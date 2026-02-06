@@ -729,6 +729,66 @@ TEST(alternate_buffer_leave_without_enter) {
 }
 
 /*============================================================================
+ * Tests - Active Buffer Resolution
+ *============================================================================*/
+
+TEST(active_returns_main_by_default) {
+    WPScreenBuffer* s = make_screen(5, 3);
+
+    ASSERT_EQ(wp_screen_active(s), s);
+
+    wp_screen_destroy(s);
+}
+
+TEST(active_returns_alternate_when_active) {
+    WPScreenBuffer* s = make_screen(5, 3);
+
+    wp_screen_enter_alternate(s);
+    WPScreenBuffer* active = wp_screen_active(s);
+
+    ASSERT_NE(active, s);
+    ASSERT_EQ(active, s->alternate);
+
+    wp_screen_leave_alternate(s);
+    wp_screen_destroy(s);
+}
+
+TEST(active_returns_main_after_leave) {
+    WPScreenBuffer* s = make_screen(5, 3);
+
+    wp_screen_enter_alternate(s);
+    wp_screen_leave_alternate(s);
+
+    ASSERT_EQ(wp_screen_active(s), s);
+
+    wp_screen_destroy(s);
+}
+
+TEST(active_null_safe) {
+    ASSERT_TRUE(wp_screen_active(NULL) == NULL);
+}
+
+TEST(active_operations_go_to_alternate) {
+    WPScreenBuffer* s = make_screen(5, 3);
+
+    /* Write to main */
+    wp_screen_put_char(s, 'M');
+
+    wp_screen_enter_alternate(s);
+    WPScreenBuffer* alt = wp_screen_active(s);
+
+    /* Write to alternate via active */
+    wp_screen_put_char(alt, 'A');
+
+    ASSERT_EQ(cp_at(alt, 0, 0), (uint32_t)'A');
+    /* Main still has its content */
+    ASSERT_EQ(cp_at(s, 0, 0), (uint32_t)'M');
+
+    wp_screen_leave_alternate(s);
+    wp_screen_destroy(s);
+}
+
+/*============================================================================
  * Tests - Resize
  *============================================================================*/
 

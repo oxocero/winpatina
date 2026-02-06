@@ -23,3 +23,9 @@ add_executable(test_dispatch test_dispatch.cpp)
 target_link_libraries(test_dispatch PRIVATE winpatina_lib)
 target_include_directories(test_dispatch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME dispatch COMMAND test_dispatch)
+
+# Renderer tests
+add_executable(test_render test_render.cpp)
+target_link_libraries(test_render PRIVATE winpatina_lib)
+target_include_directories(test_render PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME render COMMAND test_render)

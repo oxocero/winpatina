@@ -104,7 +104,7 @@ set(WINPATINA_SOURCES
     src/winpatina_screen.cpp
     src/winpatina_colour.cpp
     src/winpatina_dispatch.cpp
-    # src/winpatina_render.cpp
+    src/winpatina_render.cpp
 
     # Phase 2 (not yet implemented)
     # src/winpatina_input.cpp
@@ -120,6 +120,7 @@ set(WINPATINA_HEADERS
     src/winpatina_screen.h
     src/winpatina_colour.h
     src/winpatina_dispatch.h
+    src/winpatina_render.h
 )
 
 # =============================================================================

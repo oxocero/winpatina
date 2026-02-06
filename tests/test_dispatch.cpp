@@ -837,6 +837,166 @@ TEST(dispatch_clear_and_redraw) {
 }
 
 /*============================================================================
+ * Tests - Alternate Buffer Dispatch Routing
+ *============================================================================*/
+
+TEST(dispatch_alt_print_goes_to_alternate) {
+    TestFixture f;
+    f.feed("Main");
+    f.feed("\x1b[?1049h");  /* Enter alternate */
+    f.feed("Alt");
+
+    /* Text should be on the alternate buffer, not the main */
+    WPScreenBuffer* alt = f.screen->alternate;
+    ASSERT_NE(alt, (WPScreenBuffer*)NULL);
+    ASSERT_EQ(wp_screen_cell_at(alt, 0, 0)->codepoint, (uint32_t)'A');
+    ASSERT_EQ(wp_screen_cell_at(alt, 1, 0)->codepoint, (uint32_t)'l');
+    ASSERT_EQ(wp_screen_cell_at(alt, 2, 0)->codepoint, (uint32_t)'t');
+
+    /* Main buffer should still have "Main" */
+    ASSERT_EQ(f.cell(0, 0)->codepoint, (uint32_t)'M');
+    ASSERT_EQ(f.cell(3, 0)->codepoint, (uint32_t)'n');
+
+    f.feed("\x1b[?1049l");  /* Leave alternate */
+}
+
+TEST(dispatch_alt_cursor_movement) {
+    TestFixture f;
+    f.feed("\x1b[?1049h");  /* Enter alternate */
+    f.feed("\x1b[5;10H");   /* CUP to row 5, col 10 */
+
+    WPScreenBuffer* alt = f.screen->alternate;
+    ASSERT_EQ(alt->cursor.x, 9);
+    ASSERT_EQ(alt->cursor.y, 4);
+
+    /* Main cursor should be at saved position (0,0 from before enter) */
+    ASSERT_EQ(f.screen->cursor.saved_x, 0);
+    ASSERT_EQ(f.screen->cursor.saved_y, 0);
+
+    f.feed("\x1b[?1049l");
+}
+
+TEST(dispatch_alt_erase) {
+    TestFixture f;
+    f.feed("\x1b[?1049h");  /* Enter alternate */
+    f.feed("Hello");
+    f.feed("\x1b[2J");      /* Erase display */
+
+    WPScreenBuffer* alt = f.screen->alternate;
+    ASSERT_EQ(wp_screen_cell_at(alt, 0, 0)->codepoint, (uint32_t)' ');
+
+    f.feed("\x1b[?1049l");
+}
+
+TEST(dispatch_alt_sgr_attrs) {
+    TestFixture f;
+    f.feed("\x1b[?1049h");   /* Enter alternate */
+    f.feed("\x1b[31m");      /* Red foreground */
+    f.feed("R");
+
+    WPScreenBuffer* alt = f.screen->alternate;
+    /* Red fg = Win32 0x04 */
+    ASSERT_EQ(wp_screen_cell_at(alt, 0, 0)->attributes & 0x0F, (WORD)0x04);
+
+    /* Main buffer's current_attrs should still be default */
+    /* (main is not affected by SGR while alternate is active) */
+
+    f.feed("\x1b[?1049l");
+}
+
+TEST(dispatch_alt_scroll) {
+    TestFixture f(80, 5);
+    f.feed("\x1b[?1049h");  /* Enter alternate */
+
+    /* Fill alternate with lines */
+    f.feed("AAA\r\nBBB\r\nCCC\r\nDDD\r\nEEE");
+    f.feed("\x1b[2S");  /* Scroll up 2 */
+
+    WPScreenBuffer* alt = f.screen->alternate;
+    /* Row 0 should now be what was row 2 (CCC) */
+    ASSERT_EQ(wp_screen_cell_at(alt, 0, 0)->codepoint, (uint32_t)'C');
+
+    f.feed("\x1b[?1049l");
+}
+
+TEST(dispatch_alt_c0_controls) {
+    TestFixture f;
+    f.feed("\x1b[?1049h");  /* Enter alternate */
+    f.feed("ABCDE\rX");     /* CR should go to col 0 on alternate */
+
+    WPScreenBuffer* alt = f.screen->alternate;
+    /* 'X' should overwrite 'A' at col 0 */
+    ASSERT_EQ(wp_screen_cell_at(alt, 0, 0)->codepoint, (uint32_t)'X');
+    /* Main should be unaffected */
+    ASSERT_EQ(f.cell(0, 0)->codepoint, (uint32_t)' ');
+
+    f.feed("\x1b[?1049l");
+}
+
+TEST(dispatch_alt_esc_sequences) {
+    TestFixture f;
+    f.feed("\x1b[?1049h");     /* Enter alternate */
+    f.feed("Hello");
+    f.feed("\x1b""7");         /* DECSC - save cursor on alternate */
+    f.feed("\x1b[1;1H");      /* Home */
+    f.feed("\x1b""8");         /* DECRC - restore cursor on alternate */
+
+    WPScreenBuffer* alt = f.screen->alternate;
+    ASSERT_EQ(alt->cursor.x, 5);
+    ASSERT_EQ(alt->cursor.y, 0);
+
+    f.feed("\x1b[?1049l");
+}
+
+TEST(dispatch_alt_cursor_visibility) {
+    TestFixture f;
+    f.feed("\x1b[?1049h");     /* Enter alternate */
+    f.feed("\x1b[?25l");       /* Hide cursor */
+
+    WPScreenBuffer* alt = f.screen->alternate;
+    ASSERT_FALSE(alt->cursor.visible);
+
+    /* Main cursor visibility should be unaffected */
+    ASSERT_TRUE(f.screen->cursor.visible);
+
+    f.feed("\x1b[?1049l");
+}
+
+TEST(dispatch_alt_main_preserved_after_leave) {
+    TestFixture f;
+    f.feed("Original");
+    f.feed("\x1b[5;1H");       /* Move cursor to row 5 */
+
+    f.feed("\x1b[?1049h");     /* Enter alternate */
+    f.feed("\x1b[31m");        /* Set colour */
+    f.feed("Alternate stuff");
+    f.feed("\x1b[?1049l");     /* Leave alternate */
+
+    /* Main buffer should have "Original" intact */
+    ASSERT_EQ(f.cell(0, 0)->codepoint, (uint32_t)'O');
+    ASSERT_EQ(f.cell(7, 0)->codepoint, (uint32_t)'l');
+
+    /* Cursor should be restored to where it was before entering alt */
+    ASSERT_EQ(f.screen->cursor.x, 0);
+    ASSERT_EQ(f.screen->cursor.y, 4);
+}
+
+TEST(dispatch_alt_dsr_reports_alt_cursor) {
+    TestFixture f;
+    WriteBackRecorder rec;
+    wp_dispatch_set_write_back(&f.dispatch, WriteBackRecorder::callback, &rec);
+
+    f.feed("\x1b[?1049h");     /* Enter alternate */
+    f.feed("\x1b[3;7H");       /* Cursor to row 3, col 7 on alternate */
+    f.feed("\x1b[6n");         /* DSR cursor position */
+
+    /* Should report alternate cursor, not main */
+    ASSERT_EQ(rec.as_string(), std::string("\x1b[3;7R"));
+
+    f.feed("\x1b[?1049l");
+}
+
+/*============================================================================
  * Test Runner
  *============================================================================*/
 
