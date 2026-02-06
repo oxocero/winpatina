@@ -103,6 +103,7 @@ set(WINPATINA_SOURCES
     src/winpatina_vt_parser.cpp
     src/winpatina_screen.cpp
     src/winpatina_colour.cpp
+    src/winpatina_dispatch.cpp
     # src/winpatina_render.cpp
 
     # Phase 2 (not yet implemented)
@@ -118,6 +119,7 @@ set(WINPATINA_HEADERS
     src/winpatina_vt_parser.h
     src/winpatina_screen.h
     src/winpatina_colour.h
+    src/winpatina_dispatch.h
 )
 
 # =============================================================================
