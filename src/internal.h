@@ -10,6 +10,13 @@
 #define WINPATINA_INTERNAL_H
 
 #include "winpatina.h"
+#include "winpatina_vt_parser.h"
+#include "winpatina_screen.h"
+#include "winpatina_colour.h"
+#include "winpatina_dispatch.h"
+#include "winpatina_render.h"
+#include "winpatina_input.h"
+#include "winpatina_process.h"
 
 /* Windows headers - target Windows 2000 minimum */
 #define WIN32_LEAN_AND_MEAN
@@ -113,6 +120,31 @@ struct WinPatina {
     /* Original console codepages (to restore on cleanup) */
     UINT original_output_cp;
     UINT original_input_cp;
+
+    /*==================================================================
+     * Pipeline Components (initialised when mode == WIN32_TRANSLATION)
+     *==================================================================*/
+
+    /** Screen buffer — cell grid + cursor + scroll regions */
+    WPScreenBuffer* screen;
+
+    /** VT parser — state machine that tokenises VT byte streams */
+    WPVTParser parser;
+
+    /** Dispatch — glue between parser callbacks and screen ops */
+    WPDispatchState dispatch;
+
+    /** Renderer — screen buffer to WriteConsoleOutputW */
+    WPRenderer renderer;
+
+    /** Input handler — Win32 input events to VT byte sequences */
+    WPInputState input;
+
+    /** Child process — pipes + process management */
+    WPProcess process;
+
+    /** Whether the pipeline has been set up */
+    bool pipeline_ready;
 };
 
 /*============================================================================
