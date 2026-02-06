@@ -167,6 +167,58 @@ WinPatina* wp_init(const WinPatinaConfig* config)
         SetConsoleCP(CP_UTF8);
     }
 
+    /*
+     * Set up the translation pipeline if we're in Win32 translation mode.
+     * In passthrough mode the pipeline is not needed — VT sequences
+     * go straight to the terminal.
+     */
+    if (wp->caps.mode == WP_MODE_WIN32_TRANSLATION ||
+        wp->caps.mode == WP_MODE_HYBRID) {
+
+        WORD default_attrs = 0x07;  /* White on black fallback */
+
+        /* Use the console's actual default attributes if available */
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(wp->hConsoleOutput, &csbi)) {
+            default_attrs = csbi.wAttributes;
+        }
+
+        bool has_lvb = (wp->caps.flags & WP_CAP_UNDERSCORE) != 0;
+
+        /* Screen buffer */
+        wp->screen = wp_screen_create(
+            wp->caps.screen_width, wp->caps.screen_height, default_attrs);
+        if (wp->screen == NULL) {
+            wp_set_error("Failed to create screen buffer");
+            free(wp);
+            return NULL;
+        }
+
+        /* Dispatch (parser callbacks -> screen operations) */
+        wp_dispatch_init(&wp->dispatch, wp->screen, default_attrs, has_lvb);
+
+        /* VT parser */
+        wp_vt_parser_init(&wp->parser, NULL);
+        wp_dispatch_attach(&wp->dispatch, &wp->parser);
+
+        /* Renderer */
+        if (!wp_renderer_init(&wp->renderer, wp->hConsoleOutput, wp->screen)) {
+            wp_set_error("Failed to initialise renderer");
+            wp_screen_destroy(wp->screen);
+            wp->screen = NULL;
+            free(wp);
+            return NULL;
+        }
+
+        /* Input handler */
+        wp_input_init(&wp->input);
+
+        /* Process manager (initialised but not spawned yet) */
+        wp_process_init(&wp->process);
+
+        wp->pipeline_ready = true;
+    }
+
     return wp;
 }
 
@@ -174,6 +226,24 @@ void wp_destroy(WinPatina* wp)
 {
     if (wp == NULL) {
         return;
+    }
+
+    /* Tear down the pipeline */
+    if (wp->pipeline_ready) {
+        /* Terminate child if still running */
+        if (wp_process_is_running(&wp->process)) {
+            wp_process_terminate(&wp->process, 1);
+        }
+        wp_process_destroy(&wp->process);
+
+        wp_renderer_destroy(&wp->renderer);
+
+        if (wp->screen != NULL) {
+            wp_screen_destroy(wp->screen);
+            wp->screen = NULL;
+        }
+
+        wp->pipeline_ready = false;
     }
 
     /* Restore original console output mode */
