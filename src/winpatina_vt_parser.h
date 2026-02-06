@@ -154,6 +154,17 @@ struct WPVTParser {
     /** Current state machine state */
     WPVTState state;
 
+    /**
+     * State before the most recent ESC "anywhere" transition.
+     * Used to detect String Terminator (ESC \) when leaving a string
+     * state (OSC, DCS). Without this, we cannot distinguish ESC \ as
+     * ST from a regular ESC + '\' dispatch.
+     */
+    WPVTState pre_escape_state;
+
+    /** Final byte that introduced a DCS passthrough (0x40-0x7E) */
+    char dcs_final;
+
     /*--- CSI/DCS parameter accumulation ---*/
 
     /** Parsed parameter values */

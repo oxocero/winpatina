@@ -94,6 +94,7 @@ build-x86.bat
 # Build Directories
 # =============================================================================
 build/
+build32/
 builds/
 out/
 dist/

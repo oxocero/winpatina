@@ -99,8 +99,8 @@ set(WINPATINA_SOURCES
     src/winpatina_main.cpp
     src/winpatina_detect.cpp
 
-    # Phase 1 (not yet implemented)
-    # src/winpatina_vt_parser.cpp
+    # Phase 1
+    src/winpatina_vt_parser.cpp
     # src/winpatina_screen.cpp
     # src/winpatina_colour.cpp
     # src/winpatina_render.cpp
@@ -115,6 +115,7 @@ set(WINPATINA_SOURCES
 set(WINPATINA_HEADERS
     include/winpatina.h
     src/internal.h
+    src/winpatina_vt_parser.h
 )
 
 # =============================================================================
