@@ -222,8 +222,8 @@ static void handle_sgr(WPDispatchState* state, const WPVTParser* parser)
         }
     }
 
-    /* Update the screen buffer's current attributes */
-    state->screen->current_attrs =
+    /* Update the active screen buffer's current attributes */
+    wp_screen_active(state->screen)->current_attrs =
         wp_sgr_to_attrs(&state->sgr, state->default_attrs, state->has_lvb);
 }
 
@@ -246,7 +246,7 @@ static void handle_private_mode(WPDispatchState* state,
 
         switch (mode) {
         case 25: /* DECTCEM - cursor visibility */
-            state->screen->cursor.visible = enable;
+            wp_screen_active(state->screen)->cursor.visible = enable;
             break;
 
         case 1049: /* Alternate screen buffer */
@@ -289,6 +289,8 @@ static void handle_dsr(WPDispatchState* state, const WPVTParser* parser)
 
     int param = wp_vt_get_param(parser, 0, 0);
 
+    WPScreenBuffer* active = wp_screen_active(state->screen);
+
     switch (param) {
     case 5: {
         /* Status report: respond "OK" */
@@ -301,8 +303,8 @@ static void handle_dsr(WPDispatchState* state, const WPVTParser* parser)
         /* Cursor position report: respond ESC [ row ; col R */
         char buf[32];
         int len = snprintf(buf, sizeof(buf), "\x1b[%d;%dR",
-                           state->screen->cursor.y + 1,
-                           state->screen->cursor.x + 1);
+                           active->cursor.y + 1,
+                           active->cursor.x + 1);
         if (len > 0) {
             state->on_write_back(state->write_back_data,
                                  (const uint8_t*)buf, (size_t)len);
@@ -356,14 +358,14 @@ static void dispatch_print(void* user_data, uint32_t codepoint)
 {
     WPDispatchState* state = (WPDispatchState*)user_data;
 
-    wp_screen_put_char(state->screen, codepoint);
+    wp_screen_put_char(wp_screen_active(state->screen), codepoint);
     state->last_print = codepoint;
 }
 
 static void dispatch_execute(void* user_data, uint8_t byte)
 {
     WPDispatchState* state = (WPDispatchState*)user_data;
-    WPScreenBuffer* screen = state->screen;
+    WPScreenBuffer* screen = wp_screen_active(state->screen);
 
     switch (byte) {
     case 0x07: /* BEL - bell (ignored) */
@@ -407,7 +409,7 @@ static void dispatch_csi(void* user_data, const WPVTParser* parser,
                          char final_byte)
 {
     WPDispatchState* state = (WPDispatchState*)user_data;
-    WPScreenBuffer* screen = state->screen;
+    WPScreenBuffer* screen = wp_screen_active(state->screen);
     bool is_private = wp_vt_has_intermediate(parser, '?');
 
     switch (final_byte) {
@@ -593,7 +595,7 @@ static void dispatch_esc(void* user_data, const WPVTParser* parser,
                          char final_byte)
 {
     WPDispatchState* state = (WPDispatchState*)user_data;
-    WPScreenBuffer* screen = state->screen;
+    WPScreenBuffer* screen = wp_screen_active(state->screen);
 
     (void)parser;  /* Intermediates not used for the sequences we handle */
 

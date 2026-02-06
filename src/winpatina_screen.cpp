@@ -541,6 +541,18 @@ void wp_screen_mark_all_dirty(WPScreenBuffer* screen)
 }
 
 /*============================================================================
+ * Active Buffer
+ *============================================================================*/
+
+WPScreenBuffer* wp_screen_active(WPScreenBuffer* screen)
+{
+    if (screen != NULL && screen->using_alternate && screen->alternate != NULL) {
+        return screen->alternate;
+    }
+    return screen;
+}
+
+/*============================================================================
  * Alternate Buffer
  *============================================================================*/
 

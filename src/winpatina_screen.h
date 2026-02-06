@@ -380,6 +380,22 @@ void wp_screen_enter_alternate(WPScreenBuffer* screen);
 void wp_screen_leave_alternate(WPScreenBuffer* screen);
 
 /*============================================================================
+ * Active Buffer
+ *============================================================================*/
+
+/**
+ * @brief Get the currently active screen buffer
+ *
+ * Returns the alternate buffer if it is active, otherwise returns
+ * the screen itself. All operations that read or write cells should
+ * use this to resolve the correct buffer.
+ *
+ * @param screen  Main screen buffer
+ * @return The active buffer (main or alternate)
+ */
+WPScreenBuffer* wp_screen_active(WPScreenBuffer* screen);
+
+/*============================================================================
  * Resize
  *============================================================================*/
 
