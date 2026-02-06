@@ -1,5 +1,5 @@
 # WinPatina Examples
-# Examples will be added as components are implemented
 
-# Placeholder - no examples yet
-message(STATUS "WinPatina examples: not yet implemented")
+# Visual demo - end-to-end pipeline test
+add_executable(visual_demo visual_demo.cpp)
+target_link_libraries(visual_demo PRIVATE winpatina_lib)
