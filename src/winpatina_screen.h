@@ -77,6 +77,16 @@ typedef struct {
     int y;              /**< Row (0-based) */
     bool visible;       /**< Whether the cursor is displayed */
 
+    /**
+     * Deferred line wrap flag.
+     *
+     * When the cursor reaches the right margin after writing a character,
+     * it does NOT wrap immediately. Instead this flag is set. The wrap
+     * occurs on the NEXT printable character. This allows the rightmost
+     * column to be filled without spuriously starting a new line.
+     */
+    bool pending_wrap;
+
     /** Saved cursor position (DECSC / ESC 7) */
     int saved_x;
     int saved_y;
