@@ -29,3 +29,9 @@ add_executable(test_render test_render.cpp)
 target_link_libraries(test_render PRIVATE winpatina_lib)
 target_include_directories(test_render PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME render COMMAND test_render)
+
+# Input Handler tests
+add_executable(test_input test_input.cpp)
+target_link_libraries(test_input PRIVATE winpatina_lib)
+target_include_directories(test_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME input COMMAND test_input)
