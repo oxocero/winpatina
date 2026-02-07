@@ -332,6 +332,11 @@ WORD wp_sgr_to_attrs(const WPSGRState* sgr, WORD default_attrs, bool has_lvb)
         fg_bits |= FOREGROUND_INTENSITY;
     }
 
+    /* Dim removes foreground intensity (darker text) */
+    if (sgr->dim) {
+        fg_bits &= ~FOREGROUND_INTENSITY;
+    }
+
     WORD attrs = fg_bits | bg_bits;
 
     /* Underline via LVB attribute (Vista+) */
@@ -339,20 +344,31 @@ WORD wp_sgr_to_attrs(const WPSGRState* sgr, WORD default_attrs, bool has_lvb)
         attrs |= 0x8000;  /* COMMON_LVB_UNDERSCORE */
     }
 
+    /* Overline via LVB grid horizontal (Vista+) */
+    if (sgr->overline && has_lvb) {
+        attrs |= 0x0400;  /* COMMON_LVB_GRID_HORIZONTAL */
+    }
+
+    /* Hidden: set foreground to match background (text invisible) */
+    if (sgr->hidden) {
+        fg_bits = (bg_bits >> 4) & 0x0F;
+        attrs = fg_bits | bg_bits;
+        /* Preserve LVB flags */
+        if (sgr->underline && has_lvb) attrs |= 0x8000;
+        if (sgr->overline && has_lvb)  attrs |= 0x0400;
+    }
+
     /* Reverse video: swap foreground and background */
     if (sgr->reverse) {
-        WORD new_fg = (bg_bits >> 4) & 0x0F;
-        WORD new_bg = (fg_bits & 0x0F) << 4;
-        attrs = new_fg | new_bg;
+        WORD eff_fg = attrs & 0x0F;
+        WORD eff_bg = (attrs >> 4) & 0x0F;
+        WORD new_fg = eff_bg;
+        WORD new_bg = eff_fg << 4;
+        attrs = (attrs & 0xFF00) | new_fg | new_bg;
 
         /* Preserve intensity on the (now-swapped) foreground */
         if (sgr->bold) {
             attrs |= FOREGROUND_INTENSITY;
-        }
-
-        /* Preserve underline */
-        if (sgr->underline && has_lvb) {
-            attrs |= 0x8000;
         }
     }
 

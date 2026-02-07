@@ -26,6 +26,10 @@ Tests cover:
 import sys
 import time
 
+# Force UTF-8 output — Python defaults to the ANSI codepage when stdout
+# is a pipe (which is the case under WinPatina's translation layer).
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

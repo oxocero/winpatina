@@ -109,6 +109,10 @@ static void handle_sgr_param(WPDispatchState* state,
         state->sgr.reverse = true;
         break;
 
+    case 8: /* Hidden (invisible) */
+        state->sgr.hidden = true;
+        break;
+
     case 22: /* Normal intensity (not bold, not dim) */
         state->sgr.bold = false;
         state->sgr.dim = false;
@@ -120,6 +124,18 @@ static void handle_sgr_param(WPDispatchState* state,
 
     case 27: /* Not reversed */
         state->sgr.reverse = false;
+        break;
+
+    case 28: /* Not hidden */
+        state->sgr.hidden = false;
+        break;
+
+    case 53: /* Overline */
+        state->sgr.overline = true;
+        break;
+
+    case 55: /* Not overline */
+        state->sgr.overline = false;
         break;
 
     /* Foreground colours 30-37 (standard ANSI 8) */

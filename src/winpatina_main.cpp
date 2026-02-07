@@ -280,6 +280,9 @@ void wp_destroy(WinPatina* wp)
         SetConsoleCP(wp->original_input_cp);
     }
 
+    /* Re-enable default Ctrl+C handling for the parent process */
+    SetConsoleCtrlHandler(NULL, FALSE);
+
     /* Free the structure */
     free(wp);
 }
@@ -619,15 +622,11 @@ static void handle_local_echo_key(WinPatina* wp,
         return;
     }
 
-    /* Ctrl+C — send interrupt to child, clear buffer */
+    /* Ctrl+C — deliver a real console control event to the child */
     if (uc == 0x03) {
-        uint8_t ctrlc = 0x03;
-        wp_process_write(&wp->process, &ctrlc, 1);
+        GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
         wp->line_len = 0;
         wp->line_cols = 0;
-        /* Echo ^C followed by a newline */
-        const uint8_t echo[] = {'^', 'C', 0x0D, 0x0A};
-        wp_vt_parser_feed(&wp->parser, echo, 4);
         return;
     }
 
@@ -741,6 +740,15 @@ static int post_spawn_setup(WinPatina* wp)
         full_win.Bottom = buf_size.Y - 1;
         SetConsoleWindowInfo(wp->hRenderBuffer, TRUE, &full_win);
 
+        /* Enable LVB attributes (underline, overline, grid lines) */
+        if (wp->caps.flags & WP_CAP_UNDERSCORE) {
+            DWORD out_mode = 0;
+            if (GetConsoleMode(wp->hRenderBuffer, &out_mode)) {
+                SetConsoleMode(wp->hRenderBuffer,
+                               out_mode | ENABLE_LVB_GRID_WORLDWIDE);
+            }
+        }
+
         /* Switch to the new buffer and point the renderer at it */
         SetConsoleActiveScreenBuffer(wp->hRenderBuffer);
         wp_renderer_set_handle(&wp->renderer, wp->hRenderBuffer);
@@ -757,6 +765,13 @@ static int post_spawn_setup(WinPatina* wp)
         }
         SetConsoleMode(wp->hConsoleInput, mode);
     }
+
+    /*
+     * Ignore Ctrl+C in OUR process so that GenerateConsoleCtrlEvent()
+     * only affects the child.  We deliver Ctrl+C manually when the
+     * user presses it.
+     */
+    SetConsoleCtrlHandler(NULL, TRUE);
 
     return 0;
 }
@@ -839,7 +854,7 @@ int wp_spawn_shell(WinPatina* wp)
 
         /* Pad with spaces to fill the row */
         int pad = wp->caps.screen_width - content_len
-                  + 13;  /* +13 to account for the SGR sequence bytes */
+                  + 8;  /* +8 to account for \x1b[44;97m (8 non-visible bytes) */
         if (pad < 0) pad = 0;
         for (int i = 0; i < pad && content_len + i < (int)sizeof(bar) - 10; i++) {
             bar[content_len + i] = ' ';
@@ -931,12 +946,18 @@ int wp_poll(WinPatina* wp, int timeout_ms)
 
             switch (ir.EventType) {
                 case KEY_EVENT:
+                    /*
+                     * Ctrl+C: deliver a real CTRL_C_EVENT rather than
+                     * writing 0x03 to the pipe.  This triggers signal
+                     * handlers (e.g. Python's KeyboardInterrupt).
+                     */
+                    if (ir.Event.KeyEvent.bKeyDown &&
+                        ir.Event.KeyEvent.uChar.UnicodeChar == 0x03) {
+                        GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+                        break;
+                    }
+
                     if (wp->local_echo) {
-                        /*
-                         * Line-buffered mode: characters are buffered
-                         * and echoed locally.  The complete line is
-                         * sent to the child on Enter.
-                         */
                         handle_local_echo_key(wp, &ir.Event.KeyEvent);
                     } else {
                         vt_len = wp_input_translate_key(&wp->input,
