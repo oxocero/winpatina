@@ -532,17 +532,43 @@ static void handle_local_echo_key(WinPatina* wp,
 
     /* Enter — send the buffered line to the child */
     if (uc == 0x0D) {
-        /* Intercept "cls" — clear our screen buffer directly */
+        /* Save to history (before clearing line_buf) */
+        history_push(wp, wp->line_buf, wp->line_len);
+
+        /*
+         * Intercept "cls" — cmd.exe's cls uses direct console APIs
+         * that bypass our pipes, so it would do nothing useful.
+         * Clear our screen buffer instead, send just a bare CRLF
+         * to trigger a fresh prompt, and skip the echo of that
+         * empty line.
+         */
+        /*
+         * Intercept "exit" — close the child's stdin pipe so it
+         * exits cleanly, same as Ctrl+D on an empty line.
+         */
+        if (line_matches_command(wp->line_buf, wp->line_len, "exit")) {
+            wp->line_len = 0;
+            wp->line_cols = 0;
+            wp_process_close_stdin(&wp->process);
+            return;
+        }
+
         if (line_matches_command(wp->line_buf, wp->line_len, "cls")) {
             const uint8_t clear_seq[] = {
                 0x1b, '[', '2', 'J',   /* ESC[2J — erase entire display */
                 0x1b, '[', 'H'         /* ESC[H  — cursor home */
             };
             wp_vt_parser_feed(&wp->parser, clear_seq, sizeof(clear_seq));
-        }
 
-        /* Save to history */
-        history_push(wp, wp->line_buf, wp->line_len);
+            /* Send bare CRLF so cmd.exe outputs a fresh prompt */
+            uint8_t crlf[2] = {0x0D, 0x0A};
+            wp_process_write(&wp->process, crlf, 2);
+
+            wp->line_len = 0;
+            wp->line_cols = 0;
+            wp->skipping_echo = true;
+            return;
+        }
 
         if (wp->line_len > 0) {
             wp_process_write(&wp->process,
@@ -598,9 +624,18 @@ static void handle_local_echo_key(WinPatina* wp,
         uint8_t ctrlc = 0x03;
         wp_process_write(&wp->process, &ctrlc, 1);
         wp->line_len = 0;
+        wp->line_cols = 0;
         /* Echo ^C followed by a newline */
         const uint8_t echo[] = {'^', 'C', 0x0D, 0x0A};
         wp_vt_parser_feed(&wp->parser, echo, 4);
+        return;
+    }
+
+    /* Ctrl+D — close child stdin (EOF), causing it to exit */
+    if (uc == 0x04) {
+        if (wp->line_len == 0) {
+            wp_process_close_stdin(&wp->process);
+        }
         return;
     }
 
@@ -788,7 +823,40 @@ int wp_spawn_shell(WinPatina* wp)
     wp->local_echo = true;
     wp->line_len = 0;
 
-    return post_spawn_setup(wp);
+    int rc = post_spawn_setup(wp);
+    if (rc != 0) return rc;
+
+    /*
+     * Paint a welcome bar: blue background, white text, padded to
+     * the full screen width so the colour fills the entire row.
+     */
+    {
+        char bar[512];
+        int content_len = snprintf(bar, sizeof(bar),
+            "\x1b" "[44;97m"   /* SGR: blue bg (44), bright white fg (97) */
+            " WinPatina v%s - exit by pressing Ctrl+D or typing exit",
+            wp_version_string());
+
+        /* Pad with spaces to fill the row */
+        int pad = wp->caps.screen_width - content_len
+                  + 13;  /* +13 to account for the SGR sequence bytes */
+        if (pad < 0) pad = 0;
+        for (int i = 0; i < pad && content_len + i < (int)sizeof(bar) - 10; i++) {
+            bar[content_len + i] = ' ';
+        }
+        content_len += pad;
+
+        /* Reset attributes and newline */
+        content_len += snprintf(bar + content_len,
+                                sizeof(bar) - content_len,
+                                "\x1b" "[0m\r\n");
+
+        wp_vt_parser_feed(&wp->parser,
+                          (const uint8_t*)bar, content_len);
+        wp_renderer_paint(&wp->renderer);
+    }
+
+    return 0;
 }
 
 bool wp_is_running(WinPatina* wp)
