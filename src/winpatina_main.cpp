@@ -406,6 +406,93 @@ static int encode_utf8_echo(uint8_t* buf, uint32_t cp)
 }
 
 /**
+ * Replace the current line buffer and its on-screen representation.
+ *
+ * Erases the visible text by emitting backspace-space-backspace for
+ * each display column, then writes the new text.
+ */
+static void replace_line(WinPatina* wp, const char* text, int len)
+{
+    /* Erase current visible text */
+    for (int i = 0; i < wp->line_cols; i++) {
+        uint8_t bs_seq[3] = {0x08, 0x20, 0x08};
+        wp_vt_parser_feed(&wp->parser, bs_seq, 3);
+    }
+
+    /* Load new text into line buffer */
+    if (len > (int)sizeof(wp->line_buf) - 1)
+        len = (int)sizeof(wp->line_buf) - 1;
+    memcpy(wp->line_buf, text, len);
+    wp->line_len = len;
+
+    /* Count display columns (one per codepoint — good enough for ASCII) */
+    wp->line_cols = 0;
+    for (int i = 0; i < len; ) {
+        uint8_t b = (uint8_t)text[i];
+        if (b < 0x80)      i += 1;
+        else if (b < 0xE0) i += 2;
+        else if (b < 0xF0) i += 3;
+        else                i += 4;
+        wp->line_cols++;
+    }
+
+    /* Echo new text to screen */
+    if (len > 0) {
+        wp_vt_parser_feed(&wp->parser, (const uint8_t*)text, len);
+    }
+}
+
+/**
+ * Save a command to the history ring buffer.
+ */
+static void history_push(WinPatina* wp, const uint8_t* buf, int len)
+{
+    if (len <= 0) return;
+
+    int slot = wp->history_count % WP_HISTORY_MAX;
+
+    /* Free old entry if the ring has wrapped */
+    if (wp->history[slot] != NULL) {
+        free(wp->history[slot]);
+    }
+
+    wp->history[slot] = (char*)malloc(len + 1);
+    if (wp->history[slot] != NULL) {
+        memcpy(wp->history[slot], buf, len);
+        wp->history[slot][len] = '\0';
+    }
+
+    wp->history_count++;
+    wp->history_pos = wp->history_count;
+}
+
+/**
+ * Check if the line buffer (trimmed, case-insensitive) matches a command.
+ */
+static bool line_matches_command(const uint8_t* buf, int len, const char* cmd)
+{
+    /* Trim leading spaces */
+    int start = 0;
+    while (start < len && buf[start] == ' ') start++;
+
+    /* Trim trailing spaces */
+    int end = len;
+    while (end > start && buf[end - 1] == ' ') end--;
+
+    int trimmed_len = end - start;
+    int cmd_len = (int)strlen(cmd);
+    if (trimmed_len != cmd_len) return false;
+
+    for (int i = 0; i < cmd_len; i++) {
+        char c = (char)buf[start + i];
+        /* Lowercase for case-insensitive compare */
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != cmd[i]) return false;
+    }
+    return true;
+}
+
+/**
  * Handle a key event in local-echo / line-buffered mode.
  *
  * Printable characters are added to the line buffer and echoed to the
@@ -413,8 +500,7 @@ static int encode_utf8_echo(uint8_t* buf, uint32_t cp)
  * buffered line to the child and echoes a newline; the child's echo
  * of the command is then silently consumed.
  *
- * Special keys (arrows, function keys) are silently ignored in this
- * mode because cmd.exe cannot interpret VT sequences from pipe input.
+ * Up/Down arrows navigate command history.
  */
 static void handle_local_echo_key(WinPatina* wp,
                                    const KEY_EVENT_RECORD* event)
@@ -430,6 +516,7 @@ static void handle_local_echo_key(WinPatina* wp,
         if (n > 0 && wp->line_len + n < (int)sizeof(wp->line_buf)) {
             memcpy(wp->line_buf + wp->line_len, utf8, n);
             wp->line_len += n;
+            wp->line_cols++;
             wp_vt_parser_feed(&wp->parser, utf8, n);
         }
         return;
