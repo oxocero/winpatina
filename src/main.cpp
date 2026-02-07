@@ -2,12 +2,21 @@
  * @file main.cpp
  * @brief WinPatina command-line interface
  *
- * Simple CLI that displays detected system capabilities.
- * This serves as both a test tool and a usage example.
+ * Usage:
+ *   winpatina              Launch the default shell through the pipeline
+ *   winpatina --info       Display detected system capabilities and exit
+ *   winpatina --help       Show usage information
+ *   winpatina <command>    Run a specific command through the pipeline
+ *
+ * Examples:
+ *   winpatina              Spawns cmd.exe (or %COMSPEC%)
+ *   winpatina --info       Shows Windows version, terminal type, capabilities
+ *   winpatina python.exe   Runs Python through the translation layer
  */
 
 #include "winpatina.h"
 #include <cstdio>
+#include <cstring>
 
 /*============================================================================
  * Helper Functions - Enum to String Conversion
@@ -52,39 +61,32 @@ static const char* terminal_type_to_string(WinPatinaTerminalType type)
 }
 
 /*============================================================================
- * Main Entry Point
+ * --info: Display Capabilities
  *============================================================================*/
 
-int main(int argc, char* argv[])
+static int show_info(void)
 {
-    (void)argc;  /* Unused for now */
-    (void)argv;  /* Unused for now */
-
     printf("WinPatina v%s\n", wp_version_string());
     printf("================\n\n");
 
-    /* Initialise with default configuration */
     WinPatina* wp = wp_init(NULL);
     if (wp == NULL) {
-        printf("Error: %s\n", wp_get_error());
+        fprintf(stderr, "Error: %s\n", wp_get_error());
         return 1;
     }
 
-    /* Display detected information */
     printf("System Information:\n");
     printf("  Windows Version:  %s\n", windows_version_to_string(wp_get_windows_version(wp)));
     printf("  Terminal Type:    %s\n", terminal_type_to_string(wp_get_terminal_type(wp)));
     printf("  Operating Mode:   %s\n", mode_to_string(wp_get_mode(wp)));
     printf("\n");
 
-    /* Display screen size */
     int width, height;
     wp_get_screen_size(wp, &width, &height);
     printf("Screen Size:\n");
     printf("  %d columns x %d rows\n", width, height);
     printf("\n");
 
-    /* Display capabilities */
     uint32_t caps = wp_get_capabilities(wp);
     printf("Capabilities:\n");
     printf("  [%c] VT Processing\n",  (caps & WP_CAP_VT_PROCESSING) ? 'x' : ' ');
@@ -99,8 +101,91 @@ int main(int argc, char* argv[])
     printf("  [%c] Sync Output\n",    (caps & WP_CAP_SYNC_OUTPUT)   ? 'x' : ' ');
     printf("\n");
 
+    wp_destroy(wp);
+    return 0;
+}
+
+/*============================================================================
+ * --help: Usage Information
+ *============================================================================*/
+
+static void show_help(void)
+{
+    printf("WinPatina v%s - VT to Win32 Console translation layer\n\n", wp_version_string());
+    printf("Usage:\n");
+    printf("  winpatina              Launch the default shell\n");
+    printf("  winpatina --info       Display system capabilities\n");
+    printf("  winpatina --help       Show this help message\n");
+    printf("  winpatina <command>    Run a command through the pipeline\n");
+    printf("\n");
+    printf("Options:\n");
+    printf("  --force-translate      Force Win32 translation mode\n");
+    printf("\n");
+    printf("Examples:\n");
+    printf("  winpatina              Spawns %%COMSPEC%% (usually cmd.exe)\n");
+    printf("  winpatina --info       Troubleshooting: shows detected capabilities\n");
+    printf("  winpatina python.exe   Runs Python through the translation layer\n");
+}
+
+/*============================================================================
+ * Main Entry Point
+ *============================================================================*/
+
+int main(int argc, char* argv[])
+{
+    bool force_translate = false;
+    const char* command = NULL;
+
+    /* Parse arguments */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--info") == 0) {
+            return show_info();
+        }
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            show_help();
+            return 0;
+        }
+        if (strcmp(argv[i], "--force-translate") == 0) {
+            force_translate = true;
+            continue;
+        }
+        /* First non-option argument is the command */
+        if (command == NULL) {
+            command = argv[i];
+        }
+    }
+
+    /* Initialise WinPatina */
+    WinPatinaConfig config;
+    memset(&config, 0, sizeof(config));
+    config.enable_utf8 = true;
+    config.force_translation = force_translate;
+
+    WinPatina* wp = wp_init(&config);
+    if (wp == NULL) {
+        fprintf(stderr, "winpatina: failed to initialise: %s\n", wp_get_error());
+        return 1;
+    }
+
+    /* Spawn the child process */
+    int spawn_result;
+    if (command != NULL) {
+        spawn_result = wp_spawn(wp, command, NULL);
+    } else {
+        spawn_result = wp_spawn_shell(wp);
+    }
+
+    if (spawn_result != 0) {
+        fprintf(stderr, "winpatina: failed to spawn process: %s\n", wp_get_error());
+        wp_destroy(wp);
+        return 1;
+    }
+
+    /* Run until the child exits */
+    int exit_code = wp_run(wp);
+
     /* Clean up */
     wp_destroy(wp);
 
-    return 0;
+    return (exit_code >= 0) ? exit_code : 1;
 }

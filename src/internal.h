@@ -78,6 +78,13 @@
 #endif
 
 /*============================================================================
+ * Constants
+ *============================================================================*/
+
+/** Maximum number of commands stored in the line discipline history */
+#define WP_HISTORY_MAX 64
+
+/*============================================================================
  * Internal Structures
  *============================================================================*/
 
@@ -112,6 +119,7 @@ struct WinPatina {
     /* Console handles */
     HANDLE hConsoleOutput;              /**< Standard output handle */
     HANDLE hConsoleInput;               /**< Standard input handle */
+    HANDLE hRenderBuffer;               /**< Alternate screen buffer for rendering */
 
     /* Original console modes (to restore on cleanup) */
     DWORD original_output_mode;
@@ -145,6 +153,38 @@ struct WinPatina {
 
     /** Whether the pipeline has been set up */
     bool pipeline_ready;
+
+    /*==================================================================
+     * Line Discipline (active when local_echo is true)
+     *==================================================================*/
+
+    /** Echo typed characters to screen and buffer until Enter */
+    bool local_echo;
+
+    /** True while consuming the child's echo of the last command */
+    bool skipping_echo;
+
+    /** Accumulated UTF-8 bytes for the current line */
+    uint8_t line_buf[4096];
+
+    /** Current byte count in line_buf */
+    int line_len;
+
+    /** Display columns occupied by the current line (for erase on replace) */
+    int line_cols;
+
+    /*==================================================================
+     * Command History (active when local_echo is true)
+     *==================================================================*/
+
+    /** Ring buffer of previous commands (malloc'd C strings, UTF-8) */
+    char* history[WP_HISTORY_MAX];
+
+    /** Total number of commands stored (may exceed WP_HISTORY_MAX) */
+    int history_count;
+
+    /** Current browsing position (== history_count when composing new) */
+    int history_pos;
 };
 
 /*============================================================================

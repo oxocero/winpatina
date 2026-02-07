@@ -246,6 +246,14 @@ void wp_destroy(WinPatina* wp)
         wp->pipeline_ready = false;
     }
 
+    /* Restore the original screen buffer and close our render buffer */
+    if (wp->hRenderBuffer != NULL &&
+        wp->hRenderBuffer != INVALID_HANDLE_VALUE) {
+        SetConsoleActiveScreenBuffer(wp->hConsoleOutput);
+        CloseHandle(wp->hRenderBuffer);
+        wp->hRenderBuffer = NULL;
+    }
+
     /* Restore original console output mode */
     if (wp->hConsoleOutput != NULL && wp->hConsoleOutput != INVALID_HANDLE_VALUE) {
         SetConsoleMode(wp->hConsoleOutput, wp->original_output_mode);
@@ -334,9 +342,250 @@ static void write_back_to_child(void* wb_data, const uint8_t* data, size_t len)
     wp_process_write(proc, data, (int)len);
 }
 
+/**
+ * Write keyboard input bytes to the child with CR→CRLF translation.
+ *
+ * Windows console programs reading from pipes expect CRLF line endings,
+ * but the VT convention is to send just CR for the Enter key.  This
+ * helper inserts an LF after every CR so that cmd.exe (and similar)
+ * properly recognise line endings from piped input.
+ */
+static void write_to_child(WPProcess* process, const uint8_t* buf, int len)
+{
+    int start = 0;
+    for (int i = 0; i < len; i++) {
+        if (buf[i] == 0x0D) {
+            /* Write bytes up to and including CR */
+            wp_process_write(process, buf + start, i + 1 - start);
+            /* Append LF */
+            uint8_t lf = 0x0A;
+            wp_process_write(process, &lf, 1);
+            start = i + 1;
+        }
+    }
+    if (start < len) {
+        wp_process_write(process, buf + start, len - start);
+    }
+}
+
+/*============================================================================
+ * Local Echo / Line Discipline
+ *
+ * When local_echo is true, typed characters are buffered and echoed
+ * to the screen in real time.  On Enter the complete line is sent to
+ * the child.  If echo_suppress is also true, an '@' prefix is prepended
+ * so that cmd.exe does not re-echo the command.
+ *============================================================================*/
+
+/** Encode a Unicode codepoint as UTF-8.  Returns bytes written (1-4). */
+static int encode_utf8_echo(uint8_t* buf, uint32_t cp)
+{
+    if (cp < 0x80) {
+        buf[0] = (uint8_t)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        buf[0] = (uint8_t)(0xC0 | (cp >> 6));
+        buf[1] = (uint8_t)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        buf[0] = (uint8_t)(0xE0 | (cp >> 12));
+        buf[1] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (uint8_t)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    if (cp <= 0x10FFFF) {
+        buf[0] = (uint8_t)(0xF0 | (cp >> 18));
+        buf[1] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+        buf[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+        buf[3] = (uint8_t)(0x80 | (cp & 0x3F));
+        return 4;
+    }
+    return 0;
+}
+
+/**
+ * Handle a key event in local-echo / line-buffered mode.
+ *
+ * Printable characters are added to the line buffer and echoed to the
+ * screen.  Backspace removes the last character.  Enter sends the
+ * buffered line to the child and echoes a newline; the child's echo
+ * of the command is then silently consumed.
+ *
+ * Special keys (arrows, function keys) are silently ignored in this
+ * mode because cmd.exe cannot interpret VT sequences from pipe input.
+ */
+static void handle_local_echo_key(WinPatina* wp,
+                                   const KEY_EVENT_RECORD* event)
+{
+    if (!event->bKeyDown) return;
+
+    WCHAR uc = event->uChar.UnicodeChar;
+
+    /* Printable character */
+    if (uc >= 0x20 && uc != 0x7F) {
+        uint8_t utf8[4];
+        int n = encode_utf8_echo(utf8, (uint32_t)uc);
+        if (n > 0 && wp->line_len + n < (int)sizeof(wp->line_buf)) {
+            memcpy(wp->line_buf + wp->line_len, utf8, n);
+            wp->line_len += n;
+            wp_vt_parser_feed(&wp->parser, utf8, n);
+        }
+        return;
+    }
+
+    /* Enter — send the buffered line to the child */
+    if (uc == 0x0D) {
+        if (wp->line_len > 0) {
+            wp_process_write(&wp->process,
+                             wp->line_buf, wp->line_len);
+        }
+        uint8_t crlf[2] = {0x0D, 0x0A};
+        wp_process_write(&wp->process, crlf, 2);
+        wp->line_len = 0;
+
+        /* Echo newline to screen */
+        wp_vt_parser_feed(&wp->parser, crlf, 2);
+
+        /*
+         * cmd.exe will echo the prompt + command back through the
+         * pipe.  We already showed the text via local echo, so skip
+         * the next line of child output to avoid duplication.
+         */
+        wp->skipping_echo = true;
+        return;
+    }
+
+    /* Backspace — erase the last UTF-8 character from the buffer */
+    if (uc == 0x08 || uc == 0x7F) {
+        if (wp->line_len > 0) {
+            /* Walk back past UTF-8 continuation bytes (10xxxxxx) */
+            int pos = wp->line_len - 1;
+            while (pos > 0 && (wp->line_buf[pos] & 0xC0) == 0x80) {
+                pos--;
+            }
+            wp->line_len = pos;
+
+            /* Erase on screen: BS  Space  BS */
+            uint8_t bs_seq[3] = {0x08, 0x20, 0x08};
+            wp_vt_parser_feed(&wp->parser, bs_seq, 3);
+        }
+        return;
+    }
+
+    /* Tab */
+    if (uc == 0x09) {
+        if (wp->line_len + 1 < (int)sizeof(wp->line_buf)) {
+            wp->line_buf[wp->line_len++] = 0x09;
+            uint8_t tab = 0x09;
+            wp_vt_parser_feed(&wp->parser, &tab, 1);
+        }
+        return;
+    }
+
+    /* Ctrl+C — send interrupt to child, clear buffer */
+    if (uc == 0x03) {
+        uint8_t ctrlc = 0x03;
+        wp_process_write(&wp->process, &ctrlc, 1);
+        wp->line_len = 0;
+        /* Echo ^C followed by a newline */
+        const uint8_t echo[] = {'^', 'C', 0x0D, 0x0A};
+        wp_vt_parser_feed(&wp->parser, echo, 4);
+        return;
+    }
+
+    /* Everything else (arrows, F-keys, modifier-only) — ignored */
+}
+
 /*============================================================================
  * Process Management
  *============================================================================*/
+
+/**
+ * Common setup after a child process has been spawned.
+ *
+ * Creates a dedicated console screen buffer for rendering (like the VT
+ * "alternate screen"), wires up DSR write-back, and puts the console
+ * input into raw event mode.
+ *
+ * The fresh screen buffer is essential because the existing console
+ * buffer may have been scrolled down by previous shell activity.
+ * WriteConsoleOutputW writes at buffer coordinates (row 0, 1, 2 ...)
+ * which would be off-screen in a scrolled buffer.  A new buffer starts
+ * at the top, so our output is always visible.
+ */
+static int post_spawn_setup(WinPatina* wp)
+{
+    /* Wire up DSR write-back so query responses reach the child */
+    wp_dispatch_set_write_back(&wp->dispatch, write_back_to_child,
+                                &wp->process);
+
+    /*
+     * Create a dedicated console screen buffer for rendering.
+     *
+     * The parent console's buffer is likely scrolled past row 0, so
+     * WriteConsoleOutputW targeting row 0..height-1 would paint above
+     * the visible window.  A fresh buffer starts at the top and avoids
+     * this issue.  On exit we switch back to the original buffer, just
+     * like the VT alternate-screen mechanism.
+     */
+    wp->hRenderBuffer = CreateConsoleScreenBuffer(
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        CONSOLE_TEXTMODE_BUFFER,
+        NULL
+    );
+
+    if (wp->hRenderBuffer != NULL &&
+        wp->hRenderBuffer != INVALID_HANDLE_VALUE) {
+
+        /* Copy text attributes from the original buffer */
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(wp->hConsoleOutput, &csbi)) {
+            SetConsoleTextAttribute(wp->hRenderBuffer, csbi.wAttributes);
+        }
+
+        /*
+         * Resize the new buffer to match our screen dimensions.
+         * The dance is: shrink window → set buffer size → expand window,
+         * because the buffer must always be >= the window.
+         */
+        COORD buf_size;
+        buf_size.X = (SHORT)wp->caps.screen_width;
+        buf_size.Y = (SHORT)wp->caps.screen_height;
+
+        SMALL_RECT small_win = {0, 0, 0, 0};
+        SetConsoleWindowInfo(wp->hRenderBuffer, TRUE, &small_win);
+        SetConsoleScreenBufferSize(wp->hRenderBuffer, buf_size);
+
+        SMALL_RECT full_win;
+        full_win.Left   = 0;
+        full_win.Top    = 0;
+        full_win.Right  = buf_size.X - 1;
+        full_win.Bottom = buf_size.Y - 1;
+        SetConsoleWindowInfo(wp->hRenderBuffer, TRUE, &full_win);
+
+        /* Switch to the new buffer and point the renderer at it */
+        SetConsoleActiveScreenBuffer(wp->hRenderBuffer);
+        wp_renderer_set_handle(&wp->renderer, wp->hRenderBuffer);
+
+        /* Force a full repaint so the clean buffer gets our content */
+        wp_renderer_paint_all(&wp->renderer);
+    }
+
+    /* Set console input mode for raw event reading */
+    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
+        DWORD mode = ENABLE_WINDOW_INPUT;
+        if (wp->config.enable_mouse) {
+            mode |= ENABLE_MOUSE_INPUT;
+        }
+        SetConsoleMode(wp->hConsoleInput, mode);
+    }
+
+    return 0;
+}
 
 int wp_spawn(WinPatina* wp, const char* command, char* const argv[])
 {
@@ -374,20 +623,7 @@ int wp_spawn(WinPatina* wp, const char* command, char* const argv[])
         return -1;
     }
 
-    /* Wire up DSR write-back so query responses reach the child */
-    wp_dispatch_set_write_back(&wp->dispatch, write_back_to_child,
-                                &wp->process);
-
-    /* Set console input mode for raw reading */
-    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
-        DWORD mode = ENABLE_WINDOW_INPUT;
-        if (wp->config.enable_mouse) {
-            mode |= ENABLE_MOUSE_INPUT;
-        }
-        SetConsoleMode(wp->hConsoleInput, mode);
-    }
-
-    return 0;
+    return post_spawn_setup(wp);
 }
 
 int wp_spawn_shell(WinPatina* wp)
@@ -406,18 +642,14 @@ int wp_spawn_shell(WinPatina* wp)
         return -1;
     }
 
-    wp_dispatch_set_write_back(&wp->dispatch, write_back_to_child,
-                                &wp->process);
+    /* Enable local echo for the default shell.
+     * cmd.exe through pipes does not echo typed characters, so we
+     * buffer and echo locally.  The child's own command echo is
+     * silently consumed (skipping_echo) to avoid duplication. */
+    wp->local_echo = true;
+    wp->line_len = 0;
 
-    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
-        DWORD mode = ENABLE_WINDOW_INPUT;
-        if (wp->config.enable_mouse) {
-            mode |= ENABLE_MOUSE_INPUT;
-        }
-        SetConsoleMode(wp->hConsoleInput, mode);
-    }
-
-    return 0;
+    return post_spawn_setup(wp);
 }
 
 bool wp_is_running(WinPatina* wp)
@@ -445,34 +677,35 @@ int wp_poll(WinPatina* wp, int timeout_ms)
     if (!wp->pipeline_ready) return -1;
 
     /*
-     * Build an array of handles to wait on:
-     *   [0] = console input handle (keyboard/mouse/resize events)
-     *   [1] = child stdout pipe (output data available)
+     * Wait for console input events.
+     *
+     * We only wait on the console input handle.  Anonymous pipe handles
+     * are NOT valid synchronisation objects for WaitForMultipleObjects
+     * (the Win32 docs list console input, events, mutexes, semaphores,
+     * processes, threads, and waitable timers — but not pipes).
+     * Using a pipe handle causes undefined behaviour on many Windows
+     * versions.  Instead we poll the child's stdout pipe separately
+     * via PeekNamedPipe (inside wp_process_read) on each iteration.
+     *
+     * The wait is capped at 16 ms (~60 Hz) so that child output is
+     * picked up promptly even when no console events arrive.
      */
-    HANDLE handles[2];
-    DWORD handle_count = 0;
-
     if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
-        handles[handle_count++] = wp->hConsoleInput;
+        DWORD effective_wait;
+        if (timeout_ms < 0) {
+            effective_wait = 16;
+        } else if ((DWORD)timeout_ms > 16) {
+            effective_wait = 16;
+        } else {
+            effective_wait = (DWORD)timeout_ms;
+        }
+        WaitForSingleObject(wp->hConsoleInput, effective_wait);
+    } else if (!wp_process_is_running(&wp->process)) {
+        return 1;  /* No console and child not running */
     }
-
-    HANDLE child_stdout = wp_process_get_stdout_handle(&wp->process);
-    if (child_stdout != NULL) {
-        handles[handle_count++] = child_stdout;
-    }
-
-    if (handle_count == 0) {
-        /* Nothing to wait on */
-        return wp_process_poll(&wp->process) ? 1 : -1;
-    }
-
-    /* Wait for any event */
-    DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
-    DWORD result = WaitForMultipleObjects(handle_count, handles, FALSE, wait_ms);
 
     /*
-     * Process console input events regardless of which handle signalled.
-     * ReadConsoleInput might have events queued even if the pipe triggered.
+     * Process console input events (keyboard, mouse, resize).
      */
     if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
         DWORD events_available = 0;
@@ -491,9 +724,18 @@ int wp_poll(WinPatina* wp, int timeout_ms)
 
             switch (ir.EventType) {
                 case KEY_EVENT:
-                    vt_len = wp_input_translate_key(&wp->input,
-                                                     &ir.Event.KeyEvent,
-                                                     vt_buf);
+                    if (wp->local_echo) {
+                        /*
+                         * Line-buffered mode: characters are buffered
+                         * and echoed locally.  The complete line is
+                         * sent to the child on Enter.
+                         */
+                        handle_local_echo_key(wp, &ir.Event.KeyEvent);
+                    } else {
+                        vt_len = wp_input_translate_key(&wp->input,
+                                                         &ir.Event.KeyEvent,
+                                                         vt_buf);
+                    }
                     break;
 
                 case MOUSE_EVENT:
@@ -523,24 +765,46 @@ int wp_poll(WinPatina* wp, int timeout_ms)
                     break;
             }
 
-            /* Send translated input to child */
+            /* Send translated input to child (with CR→CRLF) */
             if (vt_len > 0) {
-                wp_process_write(&wp->process, vt_buf, vt_len);
+                write_to_child(&wp->process, vt_buf, vt_len);
             }
         }
     }
 
     /*
      * Read child output and feed through the VT pipeline.
+     *
+     * When skipping_echo is set, we consume bytes until the end of
+     * the line (\n).  This discards cmd.exe's echo of the command we
+     * already displayed via local echo.
      */
+    HANDLE child_stdout = wp_process_get_stdout_handle(&wp->process);
     if (child_stdout != NULL) {
         uint8_t read_buf[WP_READ_BUF_SIZE];
         for (;;) {
             int n = wp_process_read(&wp->process, read_buf, sizeof(read_buf));
             if (n <= 0) break;
 
-            /* Feed through parser -> dispatch -> screen buffer */
-            wp_vt_parser_feed(&wp->parser, read_buf, n);
+            int offset = 0;
+
+            /* Skip the echoed command line if needed */
+            if (wp->skipping_echo) {
+                while (offset < n) {
+                    if (read_buf[offset] == '\n') {
+                        offset++;   /* consume the LF */
+                        wp->skipping_echo = false;
+                        break;
+                    }
+                    offset++;
+                }
+            }
+
+            /* Feed remaining bytes through parser */
+            if (offset < n) {
+                wp_vt_parser_feed(&wp->parser,
+                                  read_buf + offset, n - offset);
+            }
         }
     }
 
