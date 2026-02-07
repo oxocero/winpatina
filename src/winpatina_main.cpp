@@ -596,7 +596,37 @@ static void handle_local_echo_key(WinPatina* wp,
         return;
     }
 
-    /* Everything else (arrows, F-keys, modifier-only) — ignored */
+    /* Up arrow — recall previous command from history */
+    WORD vk = event->wVirtualKeyCode;
+    if (vk == VK_UP) {
+        if (wp->history_count == 0 || wp->history_pos <= 0) return;
+        wp->history_pos--;
+        int slot = wp->history_pos % WP_HISTORY_MAX;
+        if (wp->history[slot] != NULL) {
+            replace_line(wp, wp->history[slot],
+                         (int)strlen(wp->history[slot]));
+        }
+        return;
+    }
+
+    /* Down arrow — recall next command or clear line */
+    if (vk == VK_DOWN) {
+        if (wp->history_pos >= wp->history_count) return;
+        wp->history_pos++;
+        if (wp->history_pos >= wp->history_count) {
+            /* Past newest entry — show empty line */
+            replace_line(wp, "", 0);
+        } else {
+            int slot = wp->history_pos % WP_HISTORY_MAX;
+            if (wp->history[slot] != NULL) {
+                replace_line(wp, wp->history[slot],
+                             (int)strlen(wp->history[slot]));
+            }
+        }
+        return;
+    }
+
+    /* Everything else (F-keys, modifier-only) — ignored */
 }
 
 /*============================================================================
