@@ -246,6 +246,14 @@ void wp_destroy(WinPatina* wp)
         wp->pipeline_ready = false;
     }
 
+    /* Free command history */
+    for (int i = 0; i < WP_HISTORY_MAX; i++) {
+        if (wp->history[i] != NULL) {
+            free(wp->history[i]);
+            wp->history[i] = NULL;
+        }
+    }
+
     /* Restore the original screen buffer and close our render buffer */
     if (wp->hRenderBuffer != NULL &&
         wp->hRenderBuffer != INVALID_HANDLE_VALUE) {
