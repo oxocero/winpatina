@@ -524,6 +524,18 @@ static void handle_local_echo_key(WinPatina* wp,
 
     /* Enter — send the buffered line to the child */
     if (uc == 0x0D) {
+        /* Intercept "cls" — clear our screen buffer directly */
+        if (line_matches_command(wp->line_buf, wp->line_len, "cls")) {
+            const uint8_t clear_seq[] = {
+                0x1b, '[', '2', 'J',   /* ESC[2J — erase entire display */
+                0x1b, '[', 'H'         /* ESC[H  — cursor home */
+            };
+            wp_vt_parser_feed(&wp->parser, clear_seq, sizeof(clear_seq));
+        }
+
+        /* Save to history */
+        history_push(wp, wp->line_buf, wp->line_len);
+
         if (wp->line_len > 0) {
             wp_process_write(&wp->process,
                              wp->line_buf, wp->line_len);
@@ -531,6 +543,7 @@ static void handle_local_echo_key(WinPatina* wp,
         uint8_t crlf[2] = {0x0D, 0x0A};
         wp_process_write(&wp->process, crlf, 2);
         wp->line_len = 0;
+        wp->line_cols = 0;
 
         /* Echo newline to screen */
         wp_vt_parser_feed(&wp->parser, crlf, 2);
@@ -553,6 +566,7 @@ static void handle_local_echo_key(WinPatina* wp,
                 pos--;
             }
             wp->line_len = pos;
+            if (wp->line_cols > 0) wp->line_cols--;
 
             /* Erase on screen: BS  Space  BS */
             uint8_t bs_seq[3] = {0x08, 0x20, 0x08};
