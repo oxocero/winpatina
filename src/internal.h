@@ -119,7 +119,11 @@ struct WinPatina {
     /* Console handles */
     HANDLE hConsoleOutput;              /**< Standard output handle */
     HANDLE hConsoleInput;               /**< Standard input handle */
-    HANDLE hRenderBuffer;               /**< Alternate screen buffer for rendering */
+    HANDLE hRenderBuffer;               /**< Alternate screen buffer (legacy, unused with conpty) */
+
+    /* Original buffer state (saved during post_spawn_setup, restored on exit) */
+    COORD saved_buffer_size;            /**< Original buffer dimensions */
+    SMALL_RECT saved_window;            /**< Original window rectangle */
 
     /* Original console modes (to restore on cleanup) */
     DWORD original_output_mode;

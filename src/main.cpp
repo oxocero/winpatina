@@ -135,6 +135,7 @@ int main(int argc, char* argv[])
 {
     bool force_translate = false;
     const char* command = NULL;
+    int command_index = -1;
 
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
@@ -152,6 +153,7 @@ int main(int argc, char* argv[])
         /* First non-option argument is the command */
         if (command == NULL) {
             command = argv[i];
+            command_index = i;
         }
     }
 
@@ -170,7 +172,11 @@ int main(int argc, char* argv[])
     /* Spawn the child process */
     int spawn_result;
     if (command != NULL) {
-        spawn_result = wp_spawn(wp, command, NULL);
+        char* const* child_argv = NULL;
+        if (command_index >= 0 && (command_index + 1) < argc) {
+            child_argv = &argv[command_index + 1];
+        }
+        spawn_result = wp_spawn(wp, command, child_argv);
     } else {
         spawn_result = wp_spawn_shell(wp);
     }

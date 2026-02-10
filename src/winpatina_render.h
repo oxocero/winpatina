@@ -53,6 +53,12 @@ typedef struct {
 
     /** Whether cached cursor state is valid */
     bool cursor_state_valid;
+
+    /** Whether VT output is enabled on the console handle (conpty/WT).
+     *  When true, full_repaint uses a direct VT clear sequence instead of
+     *  relying on WriteConsoleOutputW-based clearing which conpty's diff
+     *  algorithm may not translate correctly. */
+    bool vt_output_enabled;
 } WPRenderer;
 
 /*============================================================================

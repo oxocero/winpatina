@@ -254,12 +254,15 @@ void wp_destroy(WinPatina* wp)
         }
     }
 
-    /* Restore the original screen buffer and close our render buffer */
-    if (wp->hRenderBuffer != NULL &&
-        wp->hRenderBuffer != INVALID_HANDLE_VALUE) {
-        SetConsoleActiveScreenBuffer(wp->hConsoleOutput);
-        CloseHandle(wp->hRenderBuffer);
-        wp->hRenderBuffer = NULL;
+    /* Restore the original buffer dimensions (saved in post_spawn_setup) */
+    if (wp->saved_buffer_size.X > 0 && wp->saved_buffer_size.Y > 0) {
+        HANDLE hOut = wp->hConsoleOutput;
+
+        /* Shrink window → resize buffer → expand window */
+        SMALL_RECT small_win = {0, 0, 0, 0};
+        SetConsoleWindowInfo(hOut, TRUE, &small_win);
+        SetConsoleScreenBufferSize(hOut, wp->saved_buffer_size);
+        SetConsoleWindowInfo(hOut, TRUE, &wp->saved_window);
     }
 
     /* Restore original console output mode */
@@ -535,6 +538,8 @@ static void handle_local_echo_key(WinPatina* wp,
 
     /* Enter — send the buffered line to the child */
     if (uc == 0x0D) {
+        bool had_typed_input = (wp->line_len > 0);
+
         /* Save to history (before clearing line_buf) */
         history_push(wp, wp->line_buf, wp->line_len);
 
@@ -590,7 +595,7 @@ static void handle_local_echo_key(WinPatina* wp,
          * pipe.  We already showed the text via local echo, so skip
          * the next line of child output to avoid duplication.
          */
-        wp->skipping_echo = true;
+        wp->skipping_echo = had_typed_input;
         return;
     }
 
@@ -695,63 +700,135 @@ static int post_spawn_setup(WinPatina* wp)
                                 &wp->process);
 
     /*
-     * Create a dedicated console screen buffer for rendering.
+     * Prepare the console buffer for rendering.
      *
-     * The parent console's buffer is likely scrolled past row 0, so
-     * WriteConsoleOutputW targeting row 0..height-1 would paint above
-     * the visible window.  A fresh buffer starts at the top and avoids
-     * this issue.  On exit we switch back to the original buffer, just
-     * like the VT alternate-screen mechanism.
+     * Previous approach: create a dedicated buffer via
+     * CreateConsoleScreenBuffer.  This doesn't work with conpty
+     * (Windows Terminal) because conpty only monitors the original
+     * buffer — changes to a secondary buffer are silently lost.
+     *
+     * New approach: resize the original buffer to match our screen
+     * dimensions (eliminating scrollback), scroll to the top, and
+     * clear.  This keeps conpty monitoring the same buffer.
      */
-    wp->hRenderBuffer = CreateConsoleScreenBuffer(
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL,
-        CONSOLE_TEXTMODE_BUFFER,
-        NULL
-    );
+    {
+        HANDLE hOut = wp->hConsoleOutput;
 
-    if (wp->hRenderBuffer != NULL &&
-        wp->hRenderBuffer != INVALID_HANDLE_VALUE) {
-
-        /* Copy text attributes from the original buffer */
+        /* Save the original buffer size so we can restore it on exit */
+        WORD clear_attrs = 0x07;  /* White on black fallback */
         CONSOLE_SCREEN_BUFFER_INFO csbi;
-        if (GetConsoleScreenBufferInfo(wp->hConsoleOutput, &csbi)) {
-            SetConsoleTextAttribute(wp->hRenderBuffer, csbi.wAttributes);
+        if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
+            wp->saved_buffer_size = csbi.dwSize;
+            wp->saved_window = csbi.srWindow;
+            clear_attrs = csbi.wAttributes;
         }
 
-        /*
-         * Resize the new buffer to match our screen dimensions.
-         * The dance is: shrink window → set buffer size → expand window,
-         * because the buffer must always be >= the window.
-         */
         COORD buf_size;
         buf_size.X = (SHORT)wp->caps.screen_width;
         buf_size.Y = (SHORT)wp->caps.screen_height;
 
+        /*
+         * Resize: shrink window → set buffer size → expand window.
+         * The buffer must always be >= the window.
+         */
         SMALL_RECT small_win = {0, 0, 0, 0};
-        SetConsoleWindowInfo(wp->hRenderBuffer, TRUE, &small_win);
-        SetConsoleScreenBufferSize(wp->hRenderBuffer, buf_size);
+        SetConsoleWindowInfo(hOut, TRUE, &small_win);
+        SetConsoleScreenBufferSize(hOut, buf_size);
 
         SMALL_RECT full_win;
         full_win.Left   = 0;
         full_win.Top    = 0;
         full_win.Right  = buf_size.X - 1;
         full_win.Bottom = buf_size.Y - 1;
-        SetConsoleWindowInfo(wp->hRenderBuffer, TRUE, &full_win);
+        SetConsoleWindowInfo(hOut, TRUE, &full_win);
 
-        /* Enable LVB attributes (underline, overline, grid lines) */
-        if (wp->caps.flags & WP_CAP_UNDERSCORE) {
-            DWORD out_mode = 0;
-            if (GetConsoleMode(wp->hRenderBuffer, &out_mode)) {
-                SetConsoleMode(wp->hRenderBuffer,
-                               out_mode | ENABLE_LVB_GRID_WORLDWIDE);
+        /* Clear the buffer so we start fresh */
+        COORD origin = {0, 0};
+        DWORD total = (DWORD)buf_size.X * (DWORD)buf_size.Y;
+        DWORD written = 0;
+        FillConsoleOutputCharacterW(hOut, L' ', total, origin, &written);
+        FillConsoleOutputAttribute(hOut, clear_attrs,
+                                   total, origin, &written);
+        SetConsoleCursorPosition(hOut, origin);
+
+        /*
+         * Verify actual viewport dimensions and sync the screen model.
+         *
+         * We render the visible window, not the full scrollback buffer.
+         * Using dwSize here can explode the model height on terminals with
+         * large scrollback, causing sluggish or apparently frozen output.
+         */
+        CONSOLE_SCREEN_BUFFER_INFO post_csbi;
+        if (GetConsoleScreenBufferInfo(hOut, &post_csbi)) {
+            int actual_w = post_csbi.srWindow.Right - post_csbi.srWindow.Left + 1;
+            int actual_h = post_csbi.srWindow.Bottom - post_csbi.srWindow.Top + 1;
+
+            if (actual_w <= 0 || actual_h <= 0) {
+                actual_w = post_csbi.dwSize.X;
+                actual_h = post_csbi.dwSize.Y;
+            }
+
+            if (actual_w != wp->caps.screen_width ||
+                actual_h != wp->caps.screen_height) {
+                wp->caps.screen_width = actual_w;
+                wp->caps.screen_height = actual_h;
+
+                if (wp->screen != NULL) {
+                    wp_screen_resize(wp->screen, actual_w, actual_h);
+                    wp_renderer_resize(&wp->renderer);
+                }
             }
         }
 
-        /* Switch to the new buffer and point the renderer at it */
-        SetConsoleActiveScreenBuffer(wp->hRenderBuffer);
-        wp_renderer_set_handle(&wp->renderer, wp->hRenderBuffer);
+        /*
+         * Enable console output modes:
+         *  - LVB attributes (underline, overline, grid lines)
+         *  - VT processing (so we can write VT clear sequences directly
+         *    for full_repaint — conpty's diff algorithm doesn't reliably
+         *    translate WriteConsoleOutputW space-fills into visual clears)
+         *  - Disable newline auto-return (prevents \n → \r\n doubling)
+         */
+        {
+            DWORD out_mode = 0;
+            if (GetConsoleMode(hOut, &out_mode)) {
+                DWORD applied_mode = out_mode;
+                bool vt_enabled = false;
+
+                if (wp->caps.flags & WP_CAP_VT_PROCESSING) {
+                    /*
+                     * Try VT + DNA-RETURN first, then VT-only fallback.
+                     * Some consoles support VT but reject newer mode bits.
+                     */
+                    DWORD vt_mode = applied_mode
+                                  | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                                  | DISABLE_NEWLINE_AUTO_RETURN;
+                    if (SetConsoleMode(hOut, vt_mode)) {
+                        applied_mode = vt_mode;
+                        vt_enabled = true;
+                    } else {
+                        vt_mode = applied_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+                        if (SetConsoleMode(hOut, vt_mode)) {
+                            applied_mode = vt_mode;
+                            vt_enabled = true;
+                        }
+                    }
+                }
+
+                if (wp->caps.flags & WP_CAP_UNDERSCORE) {
+                    DWORD lvb_mode = applied_mode | ENABLE_LVB_GRID_WORLDWIDE;
+                    if (SetConsoleMode(hOut, lvb_mode)) {
+                        applied_mode = lvb_mode;
+                    } else {
+                        /* Keep the best mode we already managed to apply. */
+                        SetConsoleMode(hOut, applied_mode);
+                    }
+                }
+
+                wp->renderer.vt_output_enabled = vt_enabled;
+            }
+        }
+
+        /* Renderer already points at hConsoleOutput from wp_init */
 
         /* Force a full repaint so the clean buffer gets our content */
         wp_renderer_paint_all(&wp->renderer);
@@ -973,8 +1050,21 @@ int wp_poll(WinPatina* wp, int timeout_ms)
                     break;
 
                 case WINDOW_BUFFER_SIZE_EVENT: {
-                    SHORT new_w = ir.Event.WindowBufferSizeEvent.dwSize.X;
-                    SHORT new_h = ir.Event.WindowBufferSizeEvent.dwSize.Y;
+                    SHORT new_w = 0;
+                    SHORT new_h = 0;
+
+                    CONSOLE_SCREEN_BUFFER_INFO csbi;
+                    if (GetConsoleScreenBufferInfo(wp->hConsoleOutput, &csbi)) {
+                        new_w = (SHORT)(csbi.srWindow.Right - csbi.srWindow.Left + 1);
+                        new_h = (SHORT)(csbi.srWindow.Bottom - csbi.srWindow.Top + 1);
+                    } else {
+                        new_w = ir.Event.WindowBufferSizeEvent.dwSize.X;
+                        new_h = ir.Event.WindowBufferSizeEvent.dwSize.Y;
+                    }
+
+                    if (new_w <= 0 || new_h <= 0) {
+                        break;
+                    }
 
                     /* Update screen size tracking */
                     wp->caps.screen_width = new_w;
@@ -1130,4 +1220,3 @@ void wp_set_mouse_enabled(WinPatina* wp, bool enabled)
         SetConsoleMode(wp->hConsoleInput, mode);
     }
 }
-

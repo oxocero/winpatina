@@ -86,6 +86,30 @@ TEST(render_paint_clears_dirty) {
     }
 }
 
+TEST(render_paint_clears_dirty_with_vt_enabled) {
+    RenderFixture f(10, 5);
+    f.renderer.vt_output_enabled = true;
+
+    wp_renderer_paint(&f.renderer);
+
+    ASSERT_FALSE(f.screen->full_repaint);
+    for (int y = 0; y < 5; y++) {
+        ASSERT_FALSE(f.screen->dirty_rows[y]);
+    }
+}
+
+TEST(render_paint_cursor_cache_with_vt_enabled) {
+    RenderFixture f(10, 5);
+    f.renderer.vt_output_enabled = true;
+
+    wp_screen_set_cursor(f.screen, 4, 3);
+    wp_renderer_paint(&f.renderer);
+
+    ASSERT_TRUE(f.renderer.cursor_state_valid);
+    ASSERT_EQ(f.renderer.last_cursor_pos.X, (SHORT)4);
+    ASSERT_EQ(f.renderer.last_cursor_pos.Y, (SHORT)3);
+}
+
 TEST(render_paint_only_dirty_rows) {
     RenderFixture f(10, 5);
 

@@ -58,6 +58,21 @@ static void build_row(CHAR_INFO* dest, WPScreenBuffer* screen, int y)
     }
 }
 
+/**
+ * Emit a VT clear sequence directly to the console handle.
+ *
+ * Under conpty-backed terminals, this keeps the visible terminal in sync
+ * on full repaints where WriteConsoleOutputW space fills can be missed.
+ */
+static void emit_vt_clear(HANDLE console_handle)
+{
+    static const char clear_seq[] = "\x1b[2J\x1b[H";
+    DWORD written = 0;
+    WriteFile(console_handle, clear_seq, (DWORD)(sizeof(clear_seq) - 1),
+              &written, NULL);
+    (void)written;
+}
+
 /*============================================================================
  * Lifecycle
  *============================================================================*/
@@ -124,6 +139,37 @@ void wp_renderer_paint(WPRenderer* renderer)
         }
     }
 
+    /*
+     * Get the current viewport position.
+     *
+     * Under conpty (Windows Terminal), the console buffer may be much
+     * larger than the visible window, and the viewport scrolls down as
+     * content is written.  WriteConsoleOutputW uses absolute buffer
+     * coordinates, so we must offset all writes by the viewport's top
+     * row to ensure we're writing to the VISIBLE area.
+     */
+    SHORT viewport_top = 0;
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(renderer->console_handle, &csbi)) {
+        viewport_top = csbi.srWindow.Top;
+    }
+
+    /*
+     * Full repaint on VT-capable consoles: clear explicitly with VT first.
+     * This avoids stale lines on some conpty paths where bulk space fills
+     * through WriteConsoleOutputW are not reflected perfectly.
+     */
+    if (active->full_repaint && renderer->vt_output_enabled) {
+        emit_vt_clear(renderer->console_handle);
+
+        /* The clear/home may move the viewport; re-read the offset. */
+        if (GetConsoleScreenBufferInfo(renderer->console_handle, &csbi)) {
+            viewport_top = csbi.srWindow.Top;
+        } else {
+            viewport_top = 0;
+        }
+    }
+
     COORD buf_size;
     buf_size.X = (SHORT)active->width;
     buf_size.Y = 1;
@@ -132,7 +178,7 @@ void wp_renderer_paint(WPRenderer* renderer)
     buf_origin.X = 0;
     buf_origin.Y = 0;
 
-    /* Paint each dirty row */
+    /* Paint each dirty row. */
     for (int y = 0; y < active->height; y++) {
         if (!active->full_repaint && !active->dirty_rows[y]) {
             continue;
@@ -142,9 +188,9 @@ void wp_renderer_paint(WPRenderer* renderer)
 
         SMALL_RECT write_region;
         write_region.Left   = 0;
-        write_region.Top    = (SHORT)y;
+        write_region.Top    = (SHORT)(y + viewport_top);
         write_region.Right  = (SHORT)(active->width - 1);
-        write_region.Bottom = (SHORT)y;
+        write_region.Bottom = (SHORT)(y + viewport_top);
 
         WriteConsoleOutputW(
             renderer->console_handle,
@@ -157,10 +203,10 @@ void wp_renderer_paint(WPRenderer* renderer)
     /* Mark all rows clean */
     wp_screen_mark_all_clean(active);
 
-    /* Update cursor position */
+    /* Update cursor position. */
     COORD cursor_pos;
     cursor_pos.X = (SHORT)active->cursor.x;
-    cursor_pos.Y = (SHORT)active->cursor.y;
+    cursor_pos.Y = (SHORT)(active->cursor.y + viewport_top);
 
     if (!renderer->cursor_state_valid ||
         cursor_pos.X != renderer->last_cursor_pos.X ||
