@@ -57,6 +57,7 @@
 #include "winpatina_dispatch.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /*============================================================================
  * Forward Declarations (internal callbacks)
@@ -667,14 +668,77 @@ static void dispatch_esc(void* user_data, const WPVTParser* parser,
 static void dispatch_osc(void* user_data, const WPVTParser* parser)
 {
     (void)user_data;
-    (void)parser;
+
+    if (parser == NULL || parser->string_len <= 0) {
+        return;
+    }
 
     /*
-     * OSC sequences (window title, etc.) are recognised but not
-     * acted upon -- the Win32 console title is managed separately.
-     * This could be extended later to set the console title via
-     * SetConsoleTitleW for OSC 0 and OSC 2.
+     * Handle OSC 0 and OSC 2:
+     *   OSC 0 ; <title> BEL/ST  -> icon name + window title
+     *   OSC 2 ; <title> BEL/ST  -> window title
+     *
+     * Payload in parser->string_buffer is raw OSC content, e.g. "2;Title".
      */
+    const char* payload = parser->string_buffer;
+    int len = parser->string_len;
+    int sep = -1;
+
+    for (int i = 0; i < len; i++) {
+        if (payload[i] == ';') {
+            sep = i;
+            break;
+        }
+    }
+    if (sep <= 0) {
+        return;  /* Missing or empty command number */
+    }
+
+    int cmd = 0;
+    for (int i = 0; i < sep; i++) {
+        char ch = payload[i];
+        if (ch < '0' || ch > '9') {
+            return;
+        }
+        cmd = cmd * 10 + (ch - '0');
+        if (cmd > 9999) {
+            return;
+        }
+    }
+
+    if (cmd != 0 && cmd != 2) {
+        return;  /* Unsupported OSC command */
+    }
+
+    const char* title = payload + sep + 1;
+    int title_len = len - sep - 1;
+    if (title_len < 0) {
+        return;
+    }
+
+    int wide_len = MultiByteToWideChar(CP_UTF8, 0, title, title_len, NULL, 0);
+    UINT cp = CP_UTF8;
+    if (wide_len <= 0) {
+        cp = CP_ACP;
+        wide_len = MultiByteToWideChar(CP_ACP, 0, title, title_len, NULL, 0);
+        if (wide_len <= 0) {
+            return;
+        }
+    }
+
+    WCHAR* wide = (WCHAR*)malloc((size_t)(wide_len + 1) * sizeof(WCHAR));
+    if (wide == NULL) {
+        return;
+    }
+
+    if (MultiByteToWideChar(cp, 0, title, title_len, wide, wide_len) <= 0) {
+        free(wide);
+        return;
+    }
+    wide[wide_len] = L'\0';
+
+    SetConsoleTitleW(wide);
+    free(wide);
 }
 
 /*============================================================================

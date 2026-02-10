@@ -12,6 +12,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <wchar.h>
 
 /*============================================================================
  * Test Helpers
@@ -828,6 +829,30 @@ TEST(dispatch_dsr_no_writeback) {
     f.feed("\x1b[6n");
     /* Just verify it doesn't crash - no assertion needed */
     ASSERT_TRUE(true);
+}
+
+TEST(dispatch_osc_window_title) {
+    TestFixture f;
+
+    /* If title APIs are unavailable in this environment, skip gracefully. */
+    if (!SetConsoleTitleW(L"WinPatinaPreTitle")) {
+        ASSERT_TRUE(true);
+        return;
+    }
+
+    f.feed("\x1b]2;WinPatina OSC Title Test\x07");
+
+    WCHAR got[256];
+    DWORD n = GetConsoleTitleW(got, 256);
+    if (n == 0) {
+        ASSERT_TRUE(true);
+        return;
+    }
+
+    ASSERT_TRUE(wcscmp(got, L"WinPatina OSC Title Test") == 0);
+
+    /* Restore to a neutral title for subsequent tests. */
+    SetConsoleTitleW(L"");
 }
 
 /*============================================================================
