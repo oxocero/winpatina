@@ -193,6 +193,13 @@ void wp_screen_erase_display(WPScreenBuffer* screen, int mode)
 
     screen->cursor.pending_wrap = false;
 
+    /*
+     * Per ECMA-48, erased character positions are filled with the
+     * current visual attributes (the active SGR state), not the
+     * default attributes.  This matches xterm/VTE/mintty behaviour.
+     */
+    WORD erase_attrs = screen->current_attrs;
+
     switch (mode) {
     case 0:
         /* Cursor to end of screen */
@@ -200,13 +207,13 @@ void wp_screen_erase_display(WPScreenBuffer* screen, int mode)
         fill_cells(
             wp_screen_cell_at(screen, screen->cursor.x, screen->cursor.y),
             screen->width - screen->cursor.x,
-            0x20, screen->default_attrs);
+            0x20, erase_attrs);
         wp_screen_mark_dirty(screen, screen->cursor.y);
 
         /* All lines below cursor */
         for (int y = screen->cursor.y + 1; y < screen->height; y++) {
             fill_cells(row_ptr(screen, y), screen->width,
-                       0x20, screen->default_attrs);
+                       0x20, erase_attrs);
             wp_screen_mark_dirty(screen, y);
         }
         break;
@@ -216,14 +223,14 @@ void wp_screen_erase_display(WPScreenBuffer* screen, int mode)
         /* All lines above cursor */
         for (int y = 0; y < screen->cursor.y; y++) {
             fill_cells(row_ptr(screen, y), screen->width,
-                       0x20, screen->default_attrs);
+                       0x20, erase_attrs);
             wp_screen_mark_dirty(screen, y);
         }
 
         /* Start of current line to cursor (inclusive) */
         fill_cells(row_ptr(screen, screen->cursor.y),
                    screen->cursor.x + 1,
-                   0x20, screen->default_attrs);
+                   0x20, erase_attrs);
         wp_screen_mark_dirty(screen, screen->cursor.y);
         break;
 
@@ -231,7 +238,7 @@ void wp_screen_erase_display(WPScreenBuffer* screen, int mode)
     case 3:
         /* Entire screen */
         fill_cells(screen->cells, screen->width * screen->height,
-                   0x20, screen->default_attrs);
+                   0x20, erase_attrs);
         wp_screen_mark_all_dirty(screen);
         break;
     }
@@ -245,6 +252,7 @@ void wp_screen_erase_line(WPScreenBuffer* screen, int mode)
 
     screen->cursor.pending_wrap = false;
     int y = screen->cursor.y;
+    WORD erase_attrs = screen->current_attrs;
 
     switch (mode) {
     case 0:
@@ -252,20 +260,20 @@ void wp_screen_erase_line(WPScreenBuffer* screen, int mode)
         fill_cells(
             wp_screen_cell_at(screen, screen->cursor.x, y),
             screen->width - screen->cursor.x,
-            0x20, screen->default_attrs);
+            0x20, erase_attrs);
         break;
 
     case 1:
         /* Start of line to cursor (inclusive) */
         fill_cells(row_ptr(screen, y),
                    screen->cursor.x + 1,
-                   0x20, screen->default_attrs);
+                   0x20, erase_attrs);
         break;
 
     case 2:
         /* Entire line */
         fill_cells(row_ptr(screen, y), screen->width,
-                   0x20, screen->default_attrs);
+                   0x20, erase_attrs);
         break;
     }
 
