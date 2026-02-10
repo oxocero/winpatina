@@ -291,6 +291,21 @@ static int attrs_to_bg_index(WORD attrs)
     return 0;  /* Default: black */
 }
 
+/**
+ * Map Win32 foreground bits (0x0F mask) back to ANSI index 0-15.
+ * Returns -1 if no direct mapping is found.
+ */
+static int win32_fg_to_ansi_index(WORD fg_bits)
+{
+    WORD fg = fg_bits & 0x0F;
+    for (int i = 0; i < 16; i++) {
+        if (ansi_to_win32_fg[i] == fg) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 void wp_sgr_init(WPSGRState* sgr, WORD default_attrs)
 {
     memset(sgr, 0, sizeof(*sgr));
@@ -332,15 +347,38 @@ WORD wp_sgr_to_attrs(const WPSGRState* sgr, WORD default_attrs, bool has_lvb)
         fg_bits |= FOREGROUND_INTENSITY;
     }
 
-    /* Dim removes foreground intensity (darker text) */
+    /*
+     * Dim/faint.
+     *
+     * Primary behaviour: remove foreground intensity.
+     * Fallback: if that makes no visible change (e.g. default white 0x07),
+     * map to a darker nearby ANSI slot so SGR 2 is perceptible.
+     */
     if (sgr->dim) {
+        int ansi_idx = win32_fg_to_ansi_index(fg_bits);
         fg_bits &= ~FOREGROUND_INTENSITY;
+
+        if (ansi_idx >= 0) {
+            if (ansi_idx >= 8) {
+                /* Bright colour -> normal variant */
+                fg_bits = ansi_to_win32_fg[ansi_idx - 8];
+            } else if (ansi_idx == 7) {
+                /* Normal white -> grey (bright black) */
+                fg_bits = ansi_to_win32_fg[8];
+            } else if (ansi_idx == 8) {
+                /* Grey -> black */
+                fg_bits = ansi_to_win32_fg[0];
+            }
+        }
     }
 
     WORD attrs = fg_bits | bg_bits;
 
-    /* Underline via LVB attribute (Vista+) */
-    if (sgr->underline && has_lvb) {
+    /*
+     * Underline via LVB attribute (Vista+).
+     * Win32 has no italic bit, so italic falls back to underline.
+     */
+    if ((sgr->underline || sgr->italic) && has_lvb) {
         attrs |= 0x8000;  /* COMMON_LVB_UNDERSCORE */
     }
 
@@ -354,7 +392,7 @@ WORD wp_sgr_to_attrs(const WPSGRState* sgr, WORD default_attrs, bool has_lvb)
         fg_bits = (bg_bits >> 4) & 0x0F;
         attrs = fg_bits | bg_bits;
         /* Preserve LVB flags */
-        if (sgr->underline && has_lvb) attrs |= 0x8000;
+        if ((sgr->underline || sgr->italic) && has_lvb) attrs |= 0x8000;
         if (sgr->overline && has_lvb)  attrs |= 0x0400;
     }
 

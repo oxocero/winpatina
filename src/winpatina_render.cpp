@@ -17,6 +17,7 @@
 #include "winpatina_render.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 /*============================================================================
  * Internal Helpers
@@ -37,6 +38,201 @@ static WCHAR codepoint_to_wchar(uint32_t cp)
     }
     /* Supplementary plane: CHAR_INFO cannot hold surrogate pairs */
     return (WCHAR)0xFFFD;
+}
+
+/** Encode a Unicode codepoint as UTF-8. Returns bytes written (1-4). */
+static int encode_utf8(uint32_t cp, char* out)
+{
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    if (cp <= 0x10FFFF) {
+        out[0] = (char)(0xF0 | (cp >> 18));
+        out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[3] = (char)(0x80 | (cp & 0x3F));
+        return 4;
+    }
+    out[0] = '?';
+    return 1;
+}
+
+/** Map Win32 foreground bits (0x0F) to ANSI 0-15 index. */
+static int fg_bits_to_ansi(WORD fg_bits)
+{
+    static const WORD ansi_to_win32_fg[16] = {
+        0x00, 0x04, 0x02, 0x06, 0x01, 0x05, 0x03, 0x07,
+        0x08, 0x0C, 0x0A, 0x0E, 0x09, 0x0D, 0x0B, 0x0F
+    };
+    WORD fg = fg_bits & 0x0F;
+    for (int i = 0; i < 16; i++) {
+        if (ansi_to_win32_fg[i] == fg) {
+            return i;
+        }
+    }
+    return 7;
+}
+
+/** Map Win32 background bits (0xF0) to ANSI 0-15 index. */
+static int bg_bits_to_ansi(WORD bg_bits)
+{
+    static const WORD ansi_to_win32_bg[16] = {
+        0x00, 0x40, 0x20, 0x60, 0x10, 0x50, 0x30, 0x70,
+        0x80, 0xC0, 0xA0, 0xE0, 0x90, 0xD0, 0xB0, 0xF0
+    };
+    WORD bg = bg_bits & 0xF0;
+    for (int i = 0; i < 16; i++) {
+        if (ansi_to_win32_bg[i] == bg) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+/**
+ * Build an SGR sequence from Win32 attributes.
+ *
+ * We use this for VT overlay passes where low-level attributes (notably
+ * underline) are not consistently reflected by all hosts.
+ */
+static int sgr_from_attrs(WORD attrs, char* out, size_t out_cap)
+{
+    int fg = fg_bits_to_ansi(attrs & 0x0F);
+    int bg = bg_bits_to_ansi(attrs & 0xF0);
+    int pos = snprintf(out, out_cap, "\x1b[0");
+    if (pos < 0 || (size_t)pos >= out_cap) return 0;
+
+    if (attrs & 0x4000) {  /* COMMON_LVB_REVERSE_VIDEO */
+        int n = snprintf(out + pos, out_cap - (size_t)pos, ";7");
+        if (n < 0 || (size_t)n >= out_cap - (size_t)pos) return 0;
+        pos += n;
+    }
+    if (attrs & 0x8000) {  /* COMMON_LVB_UNDERSCORE */
+        int n = snprintf(out + pos, out_cap - (size_t)pos, ";4");
+        if (n < 0 || (size_t)n >= out_cap - (size_t)pos) return 0;
+        pos += n;
+    }
+
+    if (fg < 8) {
+        int n = snprintf(out + pos, out_cap - (size_t)pos, ";%d", 30 + fg);
+        if (n < 0 || (size_t)n >= out_cap - (size_t)pos) return 0;
+        pos += n;
+    } else {
+        int n = snprintf(out + pos, out_cap - (size_t)pos, ";%d", 90 + (fg - 8));
+        if (n < 0 || (size_t)n >= out_cap - (size_t)pos) return 0;
+        pos += n;
+    }
+
+    if (bg < 8) {
+        int n = snprintf(out + pos, out_cap - (size_t)pos, ";%d", 40 + bg);
+        if (n < 0 || (size_t)n >= out_cap - (size_t)pos) return 0;
+        pos += n;
+    } else {
+        int n = snprintf(out + pos, out_cap - (size_t)pos, ";%d", 100 + (bg - 8));
+        if (n < 0 || (size_t)n >= out_cap - (size_t)pos) return 0;
+        pos += n;
+    }
+
+    if ((size_t)pos + 2 > out_cap) return 0;
+    out[pos++] = 'm';
+    out[pos] = '\0';
+    return pos;
+}
+
+/** Write bytes to console handle, ignoring short writes/failures. */
+static void write_bytes(HANDLE handle, const char* data, int len)
+{
+    if (len <= 0) return;
+    DWORD written = 0;
+    WriteFile(handle, data, (DWORD)len, &written, NULL);
+    (void)written;
+}
+
+/**
+ * Overlay underlined cells using VT output.
+ *
+ * Some hosts do not faithfully represent COMMON_LVB_UNDERSCORE when content
+ * is painted through WriteConsoleOutputW. Re-emitting only underlined spans
+ * via VT keeps underline visible while preserving the fast cell renderer.
+ */
+static void paint_vt_underline_overlay(HANDLE console_handle,
+                                       WPScreenBuffer* screen)
+{
+    const int width = screen->width;
+    const int height = screen->height;
+
+    for (int y = 0; y < height; y++) {
+        if (!screen->full_repaint && !screen->dirty_rows[y]) {
+            continue;
+        }
+
+        int x = 0;
+        while (x < width) {
+            WPScreenCell* cell = &screen->cells[y * width + x];
+            if ((cell->attributes & 0x8000) == 0) {  /* COMMON_LVB_UNDERSCORE */
+                x++;
+                continue;
+            }
+
+            int start = x;
+            WORD attrs = cell->attributes;
+            while (x < width) {
+                WPScreenCell* cur = &screen->cells[y * width + x];
+                if ((cur->attributes & 0x8000) == 0 ||  /* COMMON_LVB_UNDERSCORE */
+                    cur->attributes != attrs) {
+                    break;
+                }
+                x++;
+            }
+
+            char seq[96];
+            int n = snprintf(seq, sizeof(seq), "\x1b[%d;%dH", y + 1, start + 1);
+            if (n > 0) {
+                write_bytes(console_handle, seq, n);
+            }
+
+            char sgr[64];
+            n = sgr_from_attrs(attrs, sgr, sizeof(sgr));
+            if (n > 0) {
+                write_bytes(console_handle, sgr, n);
+            }
+
+            /* Each cell contributes up to 4 UTF-8 bytes. */
+            int run_len = x - start;
+            int cap = run_len * 4;
+            char* text = (char*)malloc((size_t)cap);
+            if (text == NULL) {
+                continue;
+            }
+
+            int pos = 0;
+            for (int i = start; i < x; i++) {
+                WPScreenCell* c = &screen->cells[y * width + i];
+                uint32_t cp = c->wide_trail ? 0x20 : c->codepoint;
+                if (cp == 0) cp = 0x20;
+                if (cp > 0xFFFF) cp = 0xFFFD;  /* Match CHAR_INFO behaviour */
+                pos += encode_utf8(cp, text + pos);
+            }
+
+            write_bytes(console_handle, text, pos);
+            free(text);
+        }
+    }
+
+    /* Leave terminal state in a known baseline before cursor restore. */
+    write_bytes(console_handle, "\x1b[0m", 4);
 }
 
 /**
@@ -198,6 +394,10 @@ void wp_renderer_paint(WPRenderer* renderer)
             buf_size,
             buf_origin,
             &write_region);
+    }
+
+    if (renderer->vt_output_enabled) {
+        paint_vt_underline_overlay(renderer->console_handle, active);
     }
 
     /* Mark all rows clean */

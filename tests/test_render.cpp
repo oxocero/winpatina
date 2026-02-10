@@ -110,6 +110,27 @@ TEST(render_paint_cursor_cache_with_vt_enabled) {
     ASSERT_EQ(f.renderer.last_cursor_pos.Y, (SHORT)3);
 }
 
+TEST(render_paint_vt_underline_overlay_safe) {
+    RenderFixture f(10, 5);
+    f.renderer.vt_output_enabled = true;
+
+    WPScreenCell* c0 = wp_screen_cell_at(f.screen, 0, 0);
+    WPScreenCell* c1 = wp_screen_cell_at(f.screen, 1, 0);
+    ASSERT_TRUE(c0 != NULL);
+    ASSERT_TRUE(c1 != NULL);
+
+    c0->codepoint = 'U';
+    c1->codepoint = 'L';
+    c0->attributes = (WORD)(DEFAULT_ATTRS | 0x8000);  /* LVB underscore */
+    c1->attributes = (WORD)(DEFAULT_ATTRS | 0x8000);
+    wp_screen_mark_dirty(f.screen, 0);
+
+    wp_renderer_paint(&f.renderer);
+
+    ASSERT_FALSE(f.screen->full_repaint);
+    ASSERT_FALSE(f.screen->dirty_rows[0]);
+}
+
 TEST(render_paint_only_dirty_rows) {
     RenderFixture f(10, 5);
 

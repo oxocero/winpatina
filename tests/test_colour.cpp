@@ -267,6 +267,7 @@ TEST(sgr_init_defaults) {
     ASSERT_EQ(sgr.bg_index, 0);
     ASSERT_FALSE(sgr.bold);
     ASSERT_FALSE(sgr.dim);
+    ASSERT_FALSE(sgr.italic);
     ASSERT_FALSE(sgr.underline);
     ASSERT_FALSE(sgr.reverse);
 }
@@ -288,6 +289,7 @@ TEST(sgr_reset_restores_defaults) {
     sgr.fg_index = 1;
     sgr.bg_index = 4;
     sgr.bold = true;
+    sgr.italic = true;
     sgr.underline = true;
     sgr.reverse = true;
 
@@ -297,6 +299,7 @@ TEST(sgr_reset_restores_defaults) {
     ASSERT_EQ(sgr.fg_index, 7);
     ASSERT_EQ(sgr.bg_index, 0);
     ASSERT_FALSE(sgr.bold);
+    ASSERT_FALSE(sgr.italic);
     ASSERT_FALSE(sgr.underline);
     ASSERT_FALSE(sgr.reverse);
 }
@@ -330,6 +333,29 @@ TEST(sgr_to_attrs_bold_intensity) {
     ASSERT_TRUE((attrs & FOREGROUND_INTENSITY) != 0);
 }
 
+TEST(sgr_to_attrs_dim_default_white_to_grey) {
+    WPSGRState sgr;
+    wp_sgr_init(&sgr, 0x07);  /* Default white on black */
+
+    sgr.dim = true;
+    WORD attrs = wp_sgr_to_attrs(&sgr, 0x07, false);
+
+    /* Faint default white should become grey (ANSI 8 -> Win32 0x08). */
+    ASSERT_EQ(attrs & 0x0F, (WORD)0x08);
+}
+
+TEST(sgr_to_attrs_dim_bright_red_to_red) {
+    WPSGRState sgr;
+    wp_sgr_init(&sgr, 0x07);
+
+    /* Bright red should dim to normal red. */
+    sgr.fg_index = 9;  /* ANSI bright red */
+    sgr.dim = true;
+    WORD attrs = wp_sgr_to_attrs(&sgr, 0x07, false);
+
+    ASSERT_EQ(attrs & 0x0F, (WORD)0x04);
+}
+
 TEST(sgr_to_attrs_underline_with_lvb) {
     WPSGRState sgr;
     wp_sgr_init(&sgr, 0x07);
@@ -339,6 +365,18 @@ TEST(sgr_to_attrs_underline_with_lvb) {
     WORD attrs_without = wp_sgr_to_attrs(&sgr, 0x07, false);
 
     /* Underline only set when has_lvb is true */
+    ASSERT_TRUE((attrs_with & 0x8000) != 0);
+    ASSERT_TRUE((attrs_without & 0x8000) == 0);
+}
+
+TEST(sgr_to_attrs_italic_fallback_with_lvb) {
+    WPSGRState sgr;
+    wp_sgr_init(&sgr, 0x07);
+
+    sgr.italic = true;
+    WORD attrs_with = wp_sgr_to_attrs(&sgr, 0x07, true);
+    WORD attrs_without = wp_sgr_to_attrs(&sgr, 0x07, false);
+
     ASSERT_TRUE((attrs_with & 0x8000) != 0);
     ASSERT_TRUE((attrs_without & 0x8000) == 0);
 }

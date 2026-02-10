@@ -119,6 +119,7 @@ typedef struct {
     int bg_index;       /**< Background: ANSI index 0-15, or -1 for default */
     bool bold;          /**< SGR 1: bold (mapped to INTENSITY) */
     bool dim;           /**< SGR 2: dim (remove INTENSITY for darker text) */
+    bool italic;        /**< SGR 3: italic (fallback to underline on Win32) */
     bool underline;     /**< SGR 4: underline (Vista+ via LVB_UNDERSCORE) */
     bool reverse;       /**< SGR 7: reverse video */
     bool hidden;        /**< SGR 8: hidden (fg set to bg colour) */

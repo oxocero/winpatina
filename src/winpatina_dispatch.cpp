@@ -95,10 +95,16 @@ static void handle_sgr_param(WPDispatchState* state,
 
     case 1: /* Bold */
         state->sgr.bold = true;
+        state->sgr.dim = false;
         break;
 
     case 2: /* Dim */
+        state->sgr.bold = false;
         state->sgr.dim = true;
+        break;
+
+    case 3: /* Italic */
+        state->sgr.italic = true;
         break;
 
     case 4: /* Underline */
@@ -120,6 +126,10 @@ static void handle_sgr_param(WPDispatchState* state,
 
     case 24: /* Not underlined */
         state->sgr.underline = false;
+        break;
+
+    case 23: /* Not italic */
+        state->sgr.italic = false;
         break;
 
     case 27: /* Not reversed */

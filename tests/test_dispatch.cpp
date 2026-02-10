@@ -353,6 +353,26 @@ TEST(dispatch_sgr_bold) {
     ASSERT_TRUE((attrs & FOREGROUND_INTENSITY) != 0);
 }
 
+TEST(dispatch_sgr_dim) {
+    TestFixture f;
+    f.feed("\x1b[2m");  /* Dim/faint */
+    f.feed("d");
+
+    WORD attrs = f.cell(0, 0)->attributes;
+    /* Default white should dim to grey in translation mode. */
+    ASSERT_EQ(attrs & 0x0F, (WORD)0x08);
+}
+
+TEST(dispatch_sgr_dim_then_bold) {
+    TestFixture f;
+    f.feed("\x1b[2m");  /* Dim */
+    f.feed("\x1b[1m");  /* Bold should cancel dim */
+    f.feed("B");
+
+    WORD attrs = f.cell(0, 0)->attributes;
+    ASSERT_TRUE((attrs & FOREGROUND_INTENSITY) != 0);
+}
+
 TEST(dispatch_sgr_underline) {
     TestFixture f;
     f.feed("\x1b[4m");  /* Underline */
@@ -360,6 +380,16 @@ TEST(dispatch_sgr_underline) {
 
     WORD attrs = f.cell(0, 0)->attributes;
     /* LVB underline (0x8000) should be set (fixture has has_lvb=true) */
+    ASSERT_TRUE((attrs & 0x8000) != 0);
+}
+
+TEST(dispatch_sgr_italic_fallback) {
+    TestFixture f;
+    f.feed("\x1b[3m");  /* Italic */
+    f.feed("I");
+
+    WORD attrs = f.cell(0, 0)->attributes;
+    /* Italic falls back to LVB underline on Win32. */
     ASSERT_TRUE((attrs & 0x8000) != 0);
 }
 
@@ -482,6 +512,15 @@ TEST(dispatch_sgr_underline_off) {
     TestFixture f;
     f.feed("\x1b[4m");   /* Underline on */
     f.feed("\x1b[24m");  /* Underline off */
+    f.feed("A");
+
+    ASSERT_TRUE((f.cell(0, 0)->attributes & 0x8000) == 0);
+}
+
+TEST(dispatch_sgr_italic_off) {
+    TestFixture f;
+    f.feed("\x1b[3m");   /* Italic on */
+    f.feed("\x1b[23m");  /* Italic off */
     f.feed("A");
 
     ASSERT_TRUE((f.cell(0, 0)->attributes & 0x8000) == 0);
