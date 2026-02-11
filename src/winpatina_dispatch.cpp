@@ -344,6 +344,40 @@ static void handle_dsr(WPDispatchState* state, const WPVTParser* parser)
 }
 
 /*============================================================================
+ * Window Operations (XTWINOPS)
+ *============================================================================*/
+
+/**
+ * Handle CSI t (xterm window operations).
+ * We only respond to sub-command 18 (report terminal size in characters).
+ */
+static void handle_winops(WPDispatchState* state, const WPVTParser* parser)
+{
+    if (!state->on_write_back) {
+        return;
+    }
+
+    int param = wp_vt_get_param(parser, 0, 0);
+
+    switch (param) {
+    case 18: {
+        /* Report terminal size in characters: CSI 8 ; rows ; cols t */
+        WPScreenBuffer* active = wp_screen_active(state->screen);
+        char buf[32];
+        int len = snprintf(buf, sizeof(buf), "\x1b[8;%d;%dt",
+                           active->height, active->width);
+        if (len > 0) {
+            state->on_write_back(state->write_back_data,
+                                 (const uint8_t*)buf, (size_t)len);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+/*============================================================================
  * Linefeed Helper
  *============================================================================*/
 
@@ -610,6 +644,10 @@ static void dispatch_csi(void* user_data, const WPVTParser* parser,
 
     case 'n': /* DSR - Device Status Report */
         handle_dsr(state, parser);
+        break;
+
+    case 't': /* XTWINOPS - Window operations */
+        handle_winops(state, parser);
         break;
 
     default:

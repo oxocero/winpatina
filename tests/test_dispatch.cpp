@@ -831,6 +831,40 @@ TEST(dispatch_dsr_no_writeback) {
     ASSERT_TRUE(true);
 }
 
+/*============================================================================
+ * Tests - Window Operations (XTWINOPS)
+ *============================================================================*/
+
+TEST(dispatch_winops_report_size) {
+    /* CSI 18 t should respond with CSI 8 ; rows ; cols t */
+    TestFixture f;
+    WriteBackRecorder rec;
+    wp_dispatch_set_write_back(&f.dispatch, WriteBackRecorder::callback, &rec);
+
+    f.feed("\x1b[18t");
+
+    /* Default screen is 80x24, so expect ESC [ 8 ; 24 ; 80 t */
+    ASSERT_EQ(rec.as_string(), std::string("\x1b[8;24;80t"));
+}
+
+TEST(dispatch_winops_no_writeback) {
+    /* CSI 18 t without a write-back callback should not crash */
+    TestFixture f;
+    f.feed("\x1b[18t");
+    ASSERT_TRUE(true);
+}
+
+TEST(dispatch_winops_unknown_ignored) {
+    /* An unrecognised sub-command should not produce a response */
+    TestFixture f;
+    WriteBackRecorder rec;
+    wp_dispatch_set_write_back(&f.dispatch, WriteBackRecorder::callback, &rec);
+
+    f.feed("\x1b[99t");
+
+    ASSERT_EQ(rec.as_string(), std::string(""));
+}
+
 TEST(dispatch_osc_window_title) {
     TestFixture f;
 

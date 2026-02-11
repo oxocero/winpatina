@@ -156,8 +156,8 @@ TEST(process_null_safety) {
     ASSERT_FALSE(wp_process_terminate(NULL, 1));
     wp_process_close_stdin(NULL);
     ASSERT_EQ(wp_process_get_stdout_handle(NULL), (HANDLE)NULL);
-    ASSERT_FALSE(wp_process_spawn(NULL, "cmd.exe"));
-    ASSERT_FALSE(wp_process_spawn_shell(NULL));
+    ASSERT_FALSE(wp_process_spawn(NULL, "cmd.exe", 0, 0, false));
+    ASSERT_FALSE(wp_process_spawn_shell(NULL, 0, 0));
     ASSERT_TRUE(true);
 }
 
@@ -195,7 +195,7 @@ TEST(process_spawn_null_cmdline) {
     WPProcess proc;
     wp_process_init(&proc);
 
-    ASSERT_FALSE(wp_process_spawn(&proc, NULL));
+    ASSERT_FALSE(wp_process_spawn(&proc, NULL, 0, 0, false));
 }
 
 /*============================================================================
@@ -207,12 +207,13 @@ TEST(process_spawn_echo) {
     wp_process_init(&proc);
 
     /* Spawn cmd.exe /c echo hello */
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c echo hello");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c echo hello", 0, 0, false);
     ASSERT_TRUE(ok);
     ASSERT_TRUE(proc.hProcess != NULL);
     ASSERT_TRUE(proc.pipe_stdout_read != NULL);
     ASSERT_TRUE(proc.pipe_stdin_write != NULL);
     ASSERT_TRUE(proc.process_id != 0);
+    wp_process_resume(&proc);
 
     /* Read output */
     uint8_t buf[256];
@@ -235,8 +236,9 @@ TEST(process_spawn_exit_code) {
     WPProcess proc;
     wp_process_init(&proc);
 
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 42");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 42", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     ASSERT_TRUE(wait_for_exit(&proc, 5000));
     ASSERT_EQ(wp_process_get_exit_code(&proc), 42);
@@ -249,8 +251,9 @@ TEST(process_spawn_exit_zero) {
     WPProcess proc;
     wp_process_init(&proc);
 
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     ASSERT_TRUE(wait_for_exit(&proc, 5000));
     ASSERT_EQ(wp_process_get_exit_code(&proc), 0);
@@ -267,8 +270,9 @@ TEST(process_is_running_before_exit) {
     wp_process_init(&proc);
 
     /* Spawn a command that waits a bit */
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c ping -n 2 127.0.0.1 >nul");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c ping -n 2 127.0.0.1 >nul", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     /* Should be running immediately after spawn */
     ASSERT_TRUE(wp_process_is_running(&proc));
@@ -293,8 +297,9 @@ TEST(process_write_to_stdin) {
      * Send "echo received\r\n" then "exit\r\n".
      * Read back the output — should contain "received".
      */
-    bool ok = wp_process_spawn(&proc, "cmd.exe /q /k");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /q /k", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     /* Give cmd.exe a moment to start */
     Sleep(200);
@@ -329,8 +334,9 @@ TEST(process_close_stdin) {
     WPProcess proc;
     wp_process_init(&proc);
 
-    bool ok = wp_process_spawn(&proc, "cmd.exe /q /k");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /q /k", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     /* Close stdin — cmd.exe should eventually exit */
     wp_process_close_stdin(&proc);
@@ -346,8 +352,9 @@ TEST(process_close_stdin_double) {
     WPProcess proc;
     wp_process_init(&proc);
 
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     wp_process_close_stdin(&proc);
     wp_process_close_stdin(&proc);  /* Should not crash */
@@ -366,8 +373,9 @@ TEST(process_terminate) {
     wp_process_init(&proc);
 
     /* Spawn something that runs for a while */
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c ping -n 30 127.0.0.1 >nul");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c ping -n 30 127.0.0.1 >nul", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
     ASSERT_TRUE(wp_process_is_running(&proc));
 
     /* Terminate it */
@@ -393,8 +401,9 @@ TEST(process_spawn_shell) {
     WPProcess proc;
     wp_process_init(&proc);
 
-    bool ok = wp_process_spawn_shell(&proc);
+    bool ok = wp_process_spawn_shell(&proc, 0, 0);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
     ASSERT_TRUE(proc.hProcess != NULL);
     ASSERT_TRUE(wp_process_is_running(&proc));
 
@@ -419,8 +428,9 @@ TEST(process_get_stdout_handle) {
     /* Not spawned -> NULL */
     ASSERT_EQ(wp_process_get_stdout_handle(&proc), (HANDLE)NULL);
 
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     /* Spawned -> valid handle */
     ASSERT_TRUE(wp_process_get_stdout_handle(&proc) != NULL);
@@ -438,8 +448,9 @@ TEST(process_multi_line_output) {
     wp_process_init(&proc);
 
     bool ok = wp_process_spawn(&proc,
-        "cmd.exe /c \"echo line1 & echo line2 & echo line3\"");
+        "cmd.exe /c \"echo line1 & echo line2 & echo line3\"", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     uint8_t buf[1024];
     memset(buf, 0, sizeof(buf));
@@ -462,8 +473,9 @@ TEST(process_destroy_while_running) {
     WPProcess proc;
     wp_process_init(&proc);
 
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c ping -n 30 127.0.0.1 >nul");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c ping -n 30 127.0.0.1 >nul", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     /* Terminate then destroy */
     wp_process_terminate(&proc, 0);
@@ -483,8 +495,9 @@ TEST(process_read_after_exit) {
     WPProcess proc;
     wp_process_init(&proc);
 
-    bool ok = wp_process_spawn(&proc, "cmd.exe /c echo final");
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c echo final", 0, 0, false);
     ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
 
     ASSERT_TRUE(wait_for_exit(&proc, 5000));
 
@@ -497,6 +510,159 @@ TEST(process_read_after_exit) {
     ASSERT_TRUE(total >= 0);
 
     wp_process_destroy(&proc);
+}
+
+/*============================================================================
+ * Tests - Environment Variables (COLUMNS/LINES)
+ *============================================================================*/
+
+TEST(process_spawn_sets_columns_lines) {
+    WPProcess proc;
+    wp_process_init(&proc);
+
+    /* Spawn cmd.exe that echoes COLUMNS and LINES */
+    bool ok = wp_process_spawn(&proc,
+        "cmd.exe /c \"echo %COLUMNS% %LINES%\"", 132, 43, false);
+    ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
+
+    wait_for_exit(&proc, 5000);
+
+    uint8_t buf[4096];
+    memset(buf, 0, sizeof(buf));
+    int total = read_all(&proc, buf, sizeof(buf) - 1, 3000);
+
+    /* Output should contain the COLUMNS and LINES values */
+    ASSERT_TRUE(total > 0);
+    ASSERT_TRUE(strstr((char*)buf, "132") != NULL);
+    ASSERT_TRUE(strstr((char*)buf, "43") != NULL);
+
+    wp_process_destroy(&proc);
+}
+
+TEST(process_spawn_zero_dims_inherits_parent_env) {
+    WPProcess proc;
+    wp_process_init(&proc);
+
+    /* With cols=0, rows=0, should not set COLUMNS/LINES
+     * (they'll be empty/%COLUMNS% unless parent had them) */
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0", 0, 0, false);
+    ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
+
+    wait_for_exit(&proc, 5000);
+    ASSERT_EQ(wp_process_get_exit_code(&proc), 0);
+
+    wp_process_destroy(&proc);
+}
+
+/*============================================================================
+ * Tests - Stderr Console Buffer for CSBI
+ *
+ * The child's stderr is a separate (non-active) console screen buffer
+ * so that GetConsoleScreenBufferInfo succeeds on it, allowing TUI
+ * apps to query the terminal dimensions via the stderr fallback.
+ *============================================================================*/
+
+TEST(process_stderr_buffer_created) {
+    WPProcess proc;
+    wp_process_init(&proc);
+
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0", 80, 25, true);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(proc.hStderrBuffer != NULL);
+
+    wp_process_resume(&proc);
+    wait_for_exit(&proc, 5000);
+    wp_process_destroy(&proc);
+}
+
+TEST(process_stderr_buffer_csbi_works) {
+    WPProcess proc;
+    wp_process_init(&proc);
+
+    /*
+     * Open CONOUT$ to get the actual console dimensions.
+     * GetStdHandle(STD_OUTPUT_HANDLE) may be a pipe when running
+     * under CTest.
+     */
+    HANDLE hCon = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              NULL, OPEN_EXISTING, 0, NULL);
+    ASSERT_TRUE(hCon != INVALID_HANDLE_VALUE);
+
+    CONSOLE_SCREEN_BUFFER_INFO parent_csbi;
+    ASSERT_TRUE(GetConsoleScreenBufferInfo(hCon, &parent_csbi));
+
+    int con_w = parent_csbi.srWindow.Right - parent_csbi.srWindow.Left + 1;
+    int con_h = parent_csbi.srWindow.Bottom - parent_csbi.srWindow.Top + 1;
+    CloseHandle(hCon);
+
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0", con_w, con_h, true);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(proc.hStderrBuffer != NULL);
+
+    /* CSBI on the stderr buffer should succeed and report the
+     * console's current dimensions. */
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    BOOL csbi_ok = GetConsoleScreenBufferInfo(proc.hStderrBuffer, &csbi);
+    ASSERT_TRUE(csbi_ok);
+
+    int buf_w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    int buf_h = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    ASSERT_EQ(buf_w, con_w);
+    ASSERT_EQ(buf_h, con_h);
+
+    wp_process_resume(&proc);
+    wait_for_exit(&proc, 5000);
+    wp_process_destroy(&proc);
+}
+
+TEST(process_stderr_separate_from_stdout) {
+    WPProcess proc;
+    wp_process_init(&proc);
+
+    /*
+     * Verify stderr is NOT merged with stdout.
+     * Write "MARKER" to stderr (cmd redirect 1>&2).
+     * If stderr were the same pipe as stdout, we'd read "MARKER".
+     * With a separate console buffer, it goes there instead.
+     */
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c \"echo MARKER 1>&2\"", 80, 25, true);
+    ASSERT_TRUE(ok);
+    wp_process_resume(&proc);
+
+    uint8_t buf[1024];
+    memset(buf, 0, sizeof(buf));
+    int total = read_all(&proc, buf, sizeof(buf) - 1, 3000);
+
+    wait_for_exit(&proc, 5000);
+
+    /* MARKER should NOT appear in the stdout pipe */
+    ASSERT_TRUE(strstr((char*)buf, "MARKER") == NULL);
+
+    wp_process_destroy(&proc);
+}
+
+TEST(process_stderr_not_created_without_dims) {
+    WPProcess proc;
+    wp_process_init(&proc);
+
+    bool ok = wp_process_spawn(&proc, "cmd.exe /c exit 0", 0, 0, false);
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(proc.hStderrBuffer, (HANDLE)NULL);
+
+    wp_process_resume(&proc);
+    wait_for_exit(&proc, 5000);
+    wp_process_destroy(&proc);
+}
+
+TEST(process_stderr_resize_null_safety) {
+    ASSERT_FALSE(wp_process_update_stderr_size(NULL, 80, 25));
+
+    WPProcess proc;
+    wp_process_init(&proc);
+    ASSERT_FALSE(wp_process_update_stderr_size(&proc, 80, 25));
 }
 
 /*============================================================================

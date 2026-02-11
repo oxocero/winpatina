@@ -850,6 +850,12 @@ static int post_spawn_setup(WinPatina* wp)
      */
     SetConsoleCtrlHandler(NULL, TRUE);
 
+    /*
+     * Resume the child process. It was created suspended so the console
+     * buffer could be resized before the child queries its dimensions.
+     */
+    wp_process_resume(&wp->process);
+
     return 0;
 }
 
@@ -885,7 +891,9 @@ int wp_spawn(WinPatina* wp, const char* command, char* const argv[])
         }
     }
 
-    if (!wp_process_spawn(&wp->process, cmdline)) {
+    if (!wp_process_spawn(&wp->process, cmdline,
+                           wp->caps.screen_width,
+                           wp->caps.screen_height, true)) {
         return -1;
     }
 
@@ -904,7 +912,9 @@ int wp_spawn_shell(WinPatina* wp)
         return -1;
     }
 
-    if (!wp_process_spawn_shell(&wp->process)) {
+    if (!wp_process_spawn_shell(&wp->process,
+                                wp->caps.screen_width,
+                                wp->caps.screen_height)) {
         return -1;
     }
 
@@ -1066,6 +1076,16 @@ int wp_poll(WinPatina* wp, int timeout_ms)
                         break;
                     }
 
+                    /* Skip stale events where dimensions haven't changed.
+                     * post_spawn_setup resizes the console buffer, which
+                     * queues WINDOW_BUFFER_SIZE_EVENT entries.  Without
+                     * this guard each stale event triggers a full repaint
+                     * (emit_vt_clear under conpty), duplicating content. */
+                    if (new_w == wp->caps.screen_width &&
+                        new_h == wp->caps.screen_height) {
+                        break;
+                    }
+
                     /* Update screen size tracking */
                     wp->caps.screen_width = new_w;
                     wp->caps.screen_height = new_h;
@@ -1076,6 +1096,10 @@ int wp_poll(WinPatina* wp, int timeout_ms)
                         wp_renderer_resize(&wp->renderer);
                         wp_renderer_paint_all(&wp->renderer);
                     }
+
+                    /* Update the stderr console buffer so the child's
+                     * CSBI queries reflect the new dimensions. */
+                    wp_process_update_stderr_size(&wp->process, new_w, new_h);
                     break;
                 }
 

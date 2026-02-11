@@ -69,6 +69,14 @@ typedef struct {
     HANDLE pipe_stdout_read;
 
     /**
+     * Non-active console screen buffer passed as the child's stderr.
+     * Exists solely so GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE))
+     * succeeds inside the child, returning the correct terminal dimensions.
+     * NULL if creation failed (falls back to merging stderr with stdout).
+     */
+    HANDLE hStderrBuffer;
+
+    /**
      * Whether the child has exited.
      * Updated by wp_process_poll().
      */
@@ -95,15 +103,28 @@ void wp_process_init(WPProcess* proc);
  * @brief Spawn a child process with redirected I/O
  *
  * Creates anonymous pipes for stdin and stdout, then launches the
- * child process via CreateProcessW. The child's stderr is merged
- * with stdout (same pipe).
+ * child process via CreateProcessW.
  *
- * @param proc     Process state (must be initialised)
- * @param cmdline  Command line to execute (will be passed to
- *                 CreateProcessW, which may modify it in-place)
+ * When console_stderr is true, the child's stderr is a separate
+ * (non-active) console screen buffer so that
+ * GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE))
+ * succeeds inside the child. This allows TUI apps to detect the
+ * terminal dimensions via the stderr fallback path.
+ *
+ * When console_stderr is false, stderr is merged with stdout
+ * (same pipe). Use this for cmd.exe and other shells that switch
+ * to interactive console mode when they detect a console handle.
+ *
+ * @param proc            Process state (must be initialised)
+ * @param cmdline         Command line to execute
+ * @param cols            Terminal width in columns (COLUMNS env var)
+ * @param rows            Terminal height in rows (LINES env var)
+ * @param console_stderr  If true, give child a console buffer for
+ *                        stderr; if false, merge with stdout pipe
  * @return true on success, false on failure
  */
-bool wp_process_spawn(WPProcess* proc, const char* cmdline);
+bool wp_process_spawn(WPProcess* proc, const char* cmdline,
+                      int cols, int rows, bool console_stderr);
 
 /**
  * @brief Spawn the default shell
@@ -111,9 +132,23 @@ bool wp_process_spawn(WPProcess* proc, const char* cmdline);
  * Launches %COMSPEC% (typically cmd.exe) with redirected I/O.
  *
  * @param proc  Process state (must be initialised)
+ * @param cols  Terminal width in columns (0 to skip)
+ * @param rows  Terminal height in rows (0 to skip)
  * @return true on success, false on failure
  */
-bool wp_process_spawn_shell(WPProcess* proc);
+bool wp_process_spawn_shell(WPProcess* proc, int cols, int rows);
+
+/**
+ * @brief Resume a suspended child process
+ *
+ * Child processes are created in a suspended state so the console
+ * buffer can be resized before the child queries its dimensions.
+ * Call this after the console is set up.
+ *
+ * @param proc Process state
+ * @return true on success, false on failure
+ */
+bool wp_process_resume(WPProcess* proc);
 
 /**
  * @brief Clean up process resources
@@ -212,6 +247,21 @@ bool wp_process_terminate(WPProcess* proc, UINT exit_code);
  * @param proc  Process state
  */
 void wp_process_close_stdin(WPProcess* proc);
+
+/**
+ * @brief Update the stderr console buffer dimensions
+ *
+ * Called on window resize so that subsequent GetConsoleScreenBufferInfo
+ * queries from the child reflect the new terminal size.  The new size
+ * must not exceed the console's maximum window size (which it won't
+ * when coming from a real resize event).
+ *
+ * @param proc  Process state
+ * @param cols  New width in columns
+ * @param rows  New height in rows
+ * @return true on success, false if no stderr buffer exists
+ */
+bool wp_process_update_stderr_size(WPProcess* proc, int cols, int rows);
 
 /**
  * @brief Get the stdout read handle for use with WaitForMultipleObjects
