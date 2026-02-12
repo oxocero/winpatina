@@ -85,6 +85,27 @@ typedef struct {
     HANDLE hConsoleInput;
 
     /**
+     * Pointer to the local-echo flag in the main WinPatina instance.
+     * When a child sends any DECSET implying TUI mode (alt screen,
+     * mouse tracking, cursor key mode, bracketed paste) we clear
+     * this so raw keystrokes reach the child. When the child
+     * leaves the alternate screen we restore it.
+     * May be NULL if not applicable.
+     */
+    bool* local_echo;
+
+    /**
+     * Pointer to the line buffer length in the main WinPatina instance.
+     * Cleared alongside local_echo to discard any partially-typed input
+     * that accumulated while the line discipline was active.
+     * May be NULL if not applicable.
+     */
+    int* line_len;
+
+    /** Pointer to the display column count of the current line buffer. */
+    int* line_cols;
+
+    /**
      * Write-back callback for query responses (DSR, DA, etc.)
      * May be NULL if no write-back channel is available.
      */
@@ -111,10 +132,14 @@ typedef struct {
  * @param has_lvb        True if LVB attributes (underline) are available
  * @param input          Input handler state (may be NULL)
  * @param hConsoleInput  Console input handle (INVALID_HANDLE_VALUE if N/A)
+ * @param local_echo     Pointer to local-echo flag (may be NULL)
+ * @param line_len       Pointer to line buffer length (may be NULL)
+ * @param line_cols      Pointer to line display column count (may be NULL)
  */
 void wp_dispatch_init(WPDispatchState* state, WPScreenBuffer* screen,
                       WORD default_attrs, bool has_lvb,
-                      WPInputState* input, HANDLE hConsoleInput);
+                      WPInputState* input, HANDLE hConsoleInput,
+                      bool* local_echo, int* line_len, int* line_cols);
 
 /**
  * @brief Attach the dispatch handler to a VT parser

@@ -2,12 +2,13 @@
  * @file winpatina_process.cpp
  * @brief Child process management implementation
  *
- * Spawns a child process with its stdin/stdout/stderr redirected
- * through anonymous pipes, providing non-blocking read and
- * blocking write primitives.
+ * Spawns a child process with stdout/stderr redirected through pipes
+ * and stdin either piped or inherited from the console, providing
+ * non-blocking read and blocking write primitives.
  *
  * Pipe architecture:
  *
+ *   (piped stdin mode)
  *   [pipe_stdin_write] --write--> [pipe_stdin_read]  --> child stdin
  *   child stdout --> [pipe_stdout_write] --read--> [pipe_stdout_read]
  *   child stderr --> [pipe_stdout_write] (merged with stdout)
@@ -201,24 +202,56 @@ void wp_process_init(WPProcess* proc)
     memset(proc, 0, sizeof(*proc));
 }
 
-bool wp_process_spawn(WPProcess* proc, const char* cmdline,
-                      int cols, int rows, bool console_stderr)
+bool wp_process_spawn_ex(WPProcess* proc, const char* cmdline,
+                         int cols, int rows, bool console_stderr,
+                         bool use_console_stdin)
 {
     if (proc == NULL || cmdline == NULL) {
         wp_set_error("Invalid parameters for process spawn");
         return false;
     }
 
+    proc->pipe_stdin_write = NULL;
+    proc->stdin_is_pipe = false;
+
     /*
-     * Create stdin pipe:
-     *   child reads from pipe_stdin_read (inheritable)
-     *   we write to pipe_stdin_write (not inheritable)
+     * Configure child stdin:
+     *   - pipe mode: WinPatina writes translated VT bytes to child
+     *   - console mode: child reads directly from the console input buffer
      */
-    HANDLE pipe_stdin_read = NULL;
-    if (!create_pipe_pair(&pipe_stdin_read, &proc->pipe_stdin_write,
-                           true, false)) {
-        wp_set_error_win32("Failed to create stdin pipe", GetLastError());
-        return false;
+    HANDLE child_stdin = NULL;
+    if (use_console_stdin) {
+        HANDLE parent_stdin = GetStdHandle(STD_INPUT_HANDLE);
+        if (parent_stdin == NULL || parent_stdin == INVALID_HANDLE_VALUE) {
+            wp_set_error("Failed to get console input handle for child stdin");
+            return false;
+        }
+
+        DWORD console_mode = 0;
+        if (!GetConsoleMode(parent_stdin, &console_mode)) {
+            /* No console attached (e.g. redirected stdin) - fall back to pipe mode. */
+            use_console_stdin = false;
+        }
+    }
+
+    if (use_console_stdin) {
+        HANDLE parent_stdin = GetStdHandle(STD_INPUT_HANDLE);
+
+        if (!DuplicateHandle(GetCurrentProcess(), parent_stdin,
+                             GetCurrentProcess(), &child_stdin,
+                             0, TRUE, DUPLICATE_SAME_ACCESS)) {
+            wp_set_error_win32("Failed to duplicate console stdin handle", GetLastError());
+            return false;
+        }
+    } else {
+        HANDLE pipe_stdin_read = NULL;
+        if (!create_pipe_pair(&pipe_stdin_read, &proc->pipe_stdin_write,
+                              true, false)) {
+            wp_set_error_win32("Failed to create stdin pipe", GetLastError());
+            return false;
+        }
+        child_stdin = pipe_stdin_read;
+        proc->stdin_is_pipe = true;
     }
 
     /*
@@ -230,7 +263,7 @@ bool wp_process_spawn(WPProcess* proc, const char* cmdline,
     if (!create_pipe_pair(&proc->pipe_stdout_read, &pipe_stdout_write,
                            false, true)) {
         wp_set_error_win32("Failed to create stdout pipe", GetLastError());
-        safe_close(&pipe_stdin_read);
+        safe_close(&child_stdin);
         safe_close(&proc->pipe_stdin_write);
         return false;
     }
@@ -282,7 +315,7 @@ bool wp_process_spawn(WPProcess* proc, const char* cmdline,
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput  = pipe_stdin_read;
+    si.hStdInput  = child_stdin;
     si.hStdOutput = pipe_stdout_write;
     si.hStdError  = (stderr_buf != NULL) ? stderr_buf : pipe_stdout_write;
 
@@ -293,7 +326,7 @@ bool wp_process_spawn(WPProcess* proc, const char* cmdline,
     WCHAR* wide_cmdline = to_wide(cmdline);
     if (wide_cmdline == NULL) {
         wp_set_error("Failed to convert command line to wide string");
-        safe_close(&pipe_stdin_read);
+        safe_close(&child_stdin);
         safe_close(&pipe_stdout_write);
         safe_close(&proc->pipe_stdin_write);
         safe_close(&proc->pipe_stdout_read);
@@ -328,7 +361,7 @@ bool wp_process_spawn(WPProcess* proc, const char* cmdline,
      * Close the child's ends of the pipes — we don't need them.
      * The child holds its own copies of these handles.
      */
-    safe_close(&pipe_stdin_read);
+    safe_close(&child_stdin);
     safe_close(&pipe_stdout_write);
 
     if (!ok) {
@@ -347,6 +380,12 @@ bool wp_process_spawn(WPProcess* proc, const char* cmdline,
     proc->exit_code = 0;
 
     return true;
+}
+
+bool wp_process_spawn(WPProcess* proc, const char* cmdline,
+                      int cols, int rows, bool console_stderr)
+{
+    return wp_process_spawn_ex(proc, cmdline, cols, rows, console_stderr, false);
 }
 
 bool wp_process_spawn_shell(WPProcess* proc, int cols, int rows)
@@ -383,6 +422,7 @@ void wp_process_destroy(WPProcess* proc)
     safe_close(&proc->hProcess);
 
     proc->process_id = 0;
+    proc->stdin_is_pipe = false;
 }
 
 /*============================================================================
@@ -530,4 +570,10 @@ HANDLE wp_process_get_stdout_handle(const WPProcess* proc)
 {
     if (proc == NULL) return NULL;
     return proc->pipe_stdout_read;
+}
+
+bool wp_process_stdin_is_pipe(const WPProcess* proc)
+{
+    if (proc == NULL) return false;
+    return proc->stdin_is_pipe;
 }

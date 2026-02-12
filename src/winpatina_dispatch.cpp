@@ -278,6 +278,13 @@ static void update_console_mouse_flag(WPDispatchState* state, bool want_mouse)
     }
 
     if (want_mouse) {
+        /*
+         * QUICK_EDIT captures mouse for text selection, preventing
+         * delivery to applications. ENABLE_EXTENDED_FLAGS must be set
+         * for QUICK_EDIT changes to take effect.
+         */
+        mode |= ENABLE_EXTENDED_FLAGS;
+        mode &= ~(DWORD)ENABLE_QUICK_EDIT_MODE;
         mode |= ENABLE_MOUSE_INPUT;
     } else {
         mode &= ~(DWORD)ENABLE_MOUSE_INPUT;
@@ -310,6 +317,36 @@ static void set_mouse_tracking(WPDispatchState* state,
 }
 
 /**
+ * Disable local echo and discard any partially-typed line buffer.
+ *
+ * Called when the child sends a DECSET that implies a TUI application
+ * is taking over (alternate screen, mouse tracking, cursor key mode,
+ * bracketed paste).  Switching to raw input ensures keystrokes reach
+ * the child rather than accumulating in the line discipline.
+ */
+static void disable_local_echo(WPDispatchState* state)
+{
+    if (state->local_echo && *state->local_echo) {
+        *state->local_echo = false;
+        if (state->line_len)  *state->line_len  = 0;
+        if (state->line_cols) *state->line_cols = 0;
+    }
+}
+
+/**
+ * Re-enable local echo.
+ *
+ * Called when the child leaves the alternate screen buffer, signalling
+ * a return to the normal command-line shell.
+ */
+static void restore_local_echo(WPDispatchState* state)
+{
+    if (state->local_echo) {
+        *state->local_echo = true;
+    }
+}
+
+/**
  * Handle CSI ? ... h (DECSET) and CSI ? ... l (DECRST).
  *
  * @param state   Dispatch state
@@ -329,10 +366,12 @@ static void handle_private_mode(WPDispatchState* state,
                     ? WP_CURSOR_KEY_APPLICATION
                     : WP_CURSOR_KEY_NORMAL;
             }
+            if (enable) disable_local_echo(state);
             break;
 
         case 9: /* X10 mouse tracking (button press only) */
             set_mouse_tracking(state, WP_MOUSE_X10, enable);
+            if (enable) disable_local_echo(state);
             break;
 
         case 25: /* DECTCEM - cursor visibility */
@@ -343,21 +382,26 @@ static void handle_private_mode(WPDispatchState* state,
         case 1047:
             if (enable) {
                 wp_screen_enter_alternate(state->screen);
+                disable_local_echo(state);
             } else {
                 wp_screen_leave_alternate(state->screen);
+                restore_local_echo(state);
             }
             break;
 
         case 1000: /* Normal mouse tracking (press + release) */
             set_mouse_tracking(state, WP_MOUSE_NORMAL, enable);
+            if (enable) disable_local_echo(state);
             break;
 
         case 1002: /* Button-event tracking (press, release, drag) */
             set_mouse_tracking(state, WP_MOUSE_BUTTON, enable);
+            if (enable) disable_local_echo(state);
             break;
 
         case 1003: /* Any-event tracking (all motion) */
             set_mouse_tracking(state, WP_MOUSE_ANY, enable);
+            if (enable) disable_local_echo(state);
             break;
 
         case 1006: /* SGR extended mouse encoding */
@@ -366,13 +410,16 @@ static void handle_private_mode(WPDispatchState* state,
                     ? WP_MOUSE_ENC_SGR
                     : WP_MOUSE_ENC_DEFAULT;
             }
+            if (enable) disable_local_echo(state);
             break;
 
         case 1049: /* Alternate screen buffer */
             if (enable) {
                 wp_screen_enter_alternate(state->screen);
+                disable_local_echo(state);
             } else {
                 wp_screen_leave_alternate(state->screen);
+                restore_local_echo(state);
             }
             break;
 
@@ -380,6 +427,7 @@ static void handle_private_mode(WPDispatchState* state,
             if (state->input != NULL) {
                 state->input->bracketed_paste = enable;
             }
+            if (enable) disable_local_echo(state);
             break;
 
         default:
@@ -874,7 +922,8 @@ static void dispatch_osc(void* user_data, const WPVTParser* parser)
 
 void wp_dispatch_init(WPDispatchState* state, WPScreenBuffer* screen,
                       WORD default_attrs, bool has_lvb,
-                      WPInputState* input, HANDLE hConsoleInput)
+                      WPInputState* input, HANDLE hConsoleInput,
+                      bool* local_echo, int* line_len, int* line_cols)
 {
     memset(state, 0, sizeof(*state));
     state->screen = screen;
@@ -883,6 +932,9 @@ void wp_dispatch_init(WPDispatchState* state, WPScreenBuffer* screen,
     state->last_print = 0;
     state->input = input;
     state->hConsoleInput = hConsoleInput;
+    state->local_echo = local_echo;
+    state->line_len = line_len;
+    state->line_cols = line_cols;
     state->on_write_back = NULL;
     state->write_back_data = NULL;
 

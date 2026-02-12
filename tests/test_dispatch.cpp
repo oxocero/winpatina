@@ -28,7 +28,7 @@ struct TestFixture {
     TestFixture(int width = 80, int height = 24) {
         screen = wp_screen_create(width, height, DEFAULT_ATTRS);
         wp_dispatch_init(&dispatch, screen, DEFAULT_ATTRS, true,
-                         NULL, INVALID_HANDLE_VALUE);
+                         NULL, INVALID_HANDLE_VALUE, NULL, NULL, NULL);
         wp_vt_parser_init(&parser, NULL);
         wp_dispatch_attach(&dispatch, &parser);
     }

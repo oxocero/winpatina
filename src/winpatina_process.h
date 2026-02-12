@@ -2,9 +2,10 @@
  * @file winpatina_process.h
  * @brief Child process management - internal header
  *
- * Handles spawning a child process with its stdin/stdout redirected
- * through anonymous pipes. Provides non-blocking I/O primitives for
- * reading the child's output and writing to its input.
+ * Handles spawning a child process with stdout redirected through an
+ * anonymous pipe and stdin either piped or inherited from the console.
+ * Provides non-blocking I/O primitives for reading the child's output
+ * and (when piped) writing to its input.
  *
  *   Console Input --> [pipe] --> Child stdin
  *   Child stdout  --> [pipe] --> VT Parser --> Screen --> Renderer
@@ -84,6 +85,12 @@ typedef struct {
 
     /** Child's exit code (valid only when exited == true). */
     DWORD exit_code;
+
+    /**
+     * True when the child was spawned with piped stdin.
+     * False when stdin was inherited from the parent console.
+     */
+    bool stdin_is_pipe;
 } WPProcess;
 
 /*============================================================================
@@ -125,6 +132,25 @@ void wp_process_init(WPProcess* proc);
  */
 bool wp_process_spawn(WPProcess* proc, const char* cmdline,
                       int cols, int rows, bool console_stderr);
+
+/**
+ * @brief Spawn a child process with selectable stdin source
+ *
+ * Same as wp_process_spawn(), with control over child stdin:
+ * - use_console_stdin=false: child stdin is a pipe (WinPatina writes VT bytes)
+ * - use_console_stdin=true: child stdin inherits the parent console handle
+ *
+ * @param proc              Process state (must be initialised)
+ * @param cmdline           Command line to execute
+ * @param cols              Terminal width in columns (COLUMNS env var)
+ * @param rows              Terminal height in rows (LINES env var)
+ * @param console_stderr    If true, give child a console buffer for stderr
+ * @param use_console_stdin If true, child stdin is console input handle
+ * @return true on success, false on failure
+ */
+bool wp_process_spawn_ex(WPProcess* proc, const char* cmdline,
+                         int cols, int rows, bool console_stderr,
+                         bool use_console_stdin);
 
 /**
  * @brief Spawn the default shell
@@ -273,6 +299,14 @@ bool wp_process_update_stderr_size(WPProcess* proc, int cols, int rows);
  * @return Pipe read handle, or NULL if not spawned
  */
 HANDLE wp_process_get_stdout_handle(const WPProcess* proc);
+
+/**
+ * @brief Check whether the child uses piped stdin
+ *
+ * @param proc Process state
+ * @return true if stdin is piped, false if console stdin is inherited
+ */
+bool wp_process_stdin_is_pipe(const WPProcess* proc);
 
 #ifdef __cplusplus
 }

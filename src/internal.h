@@ -51,6 +51,14 @@
 #define ENABLE_LVB_GRID_WORLDWIDE 0x0010
 #endif
 
+#ifndef ENABLE_EXTENDED_FLAGS
+#define ENABLE_EXTENDED_FLAGS 0x0080
+#endif
+
+#ifndef ENABLE_QUICK_EDIT_MODE
+#define ENABLE_QUICK_EDIT_MODE 0x0040
+#endif
+
 /*============================================================================
  * LVB (Line Visual Buffer) Attribute Flags
  *
@@ -167,6 +175,20 @@ struct WinPatina {
 
     /** True while consuming the child's echo of the last command */
     bool skipping_echo;
+
+    /**
+     * True while a user-submitted command is running.
+     * Set when Enter sends a command, cleared when we detect the
+     * shell prompt has returned (output idle + no TUI modes active).
+     */
+    bool command_running;
+
+    /**
+     * Tick count (GetTickCount) of the last child output received.
+     * Used to detect when the child has gone idle, indicating a
+     * command has finished and the shell prompt has returned.
+     */
+    DWORD last_child_output_tick;
 
     /** Accumulated UTF-8 bytes for the current line */
     uint8_t line_buf[4096];

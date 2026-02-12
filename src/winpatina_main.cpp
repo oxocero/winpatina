@@ -196,7 +196,8 @@ WinPatina* wp_init(const WinPatinaConfig* config)
 
         /* Dispatch (parser callbacks -> screen operations) */
         wp_dispatch_init(&wp->dispatch, wp->screen, default_attrs, has_lvb,
-                         &wp->input, wp->hConsoleInput);
+                         &wp->input, wp->hConsoleInput,
+                         &wp->local_echo, &wp->line_len, &wp->line_cols);
 
         /* VT parser */
         wp_vt_parser_init(&wp->parser, NULL);
@@ -597,6 +598,20 @@ static void handle_local_echo_key(WinPatina* wp,
          * the next line of child output to avoid duplication.
          */
         wp->skipping_echo = had_typed_input;
+
+        /*
+         * Switch to raw input mode while the command runs.
+         * The child process (especially TUI apps like vim, python,
+         * etc.) needs raw keystrokes rather than line-buffered input.
+         * Local echo is restored automatically when the command
+         * finishes and the shell prompt returns (detected by an
+         * idle timeout in wp_poll).
+         */
+        if (had_typed_input) {
+            wp->local_echo = false;
+            wp->command_running = true;
+            wp->last_child_output_tick = GetTickCount();
+        }
         return;
     }
 
@@ -696,9 +711,13 @@ static void handle_local_echo_key(WinPatina* wp,
  */
 static int post_spawn_setup(WinPatina* wp)
 {
-    /* Wire up DSR write-back so query responses reach the child */
-    wp_dispatch_set_write_back(&wp->dispatch, write_back_to_child,
-                                &wp->process);
+    /* DSR write-back requires a writable stdin pipe. */
+    if (wp_process_stdin_is_pipe(&wp->process)) {
+        wp_dispatch_set_write_back(&wp->dispatch, write_back_to_child,
+                                   &wp->process);
+    } else {
+        wp_dispatch_set_write_back(&wp->dispatch, NULL, NULL);
+    }
 
     /*
      * Prepare the console buffer for rendering.
@@ -835,21 +854,45 @@ static int post_spawn_setup(WinPatina* wp)
         wp_renderer_paint_all(&wp->renderer);
     }
 
-    /* Set console input mode for raw event reading */
+    /*
+     * Input mode:
+     * - piped stdin: we consume ReadConsoleInput events and translate to VT
+     * - console stdin: child reads input events directly; keep normal mode
+     */
     if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
-        DWORD mode = ENABLE_WINDOW_INPUT;
-        if (wp->config.enable_mouse) {
-            mode |= ENABLE_MOUSE_INPUT;
+        if (wp_process_stdin_is_pipe(&wp->process)) {
+            /*
+             * ENABLE_EXTENDED_FLAGS with QUICK_EDIT cleared ensures mouse
+             * events are delivered to ReadConsoleInput instead of being
+             * captured by selection mode.
+             */
+            DWORD mode = ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS;
+            if (wp->config.enable_mouse) {
+                mode |= ENABLE_MOUSE_INPUT;
+            }
+            SetConsoleMode(wp->hConsoleInput, mode);
+        } else {
+            /*
+             * Child reads input directly. Preserve normal console behavior
+             * but force Quick Edit off so mouse events aren't eaten by
+             * selection mode in TUI applications.
+             */
+            DWORD mode = wp->original_input_mode | ENABLE_EXTENDED_FLAGS;
+            mode &= ~(DWORD)ENABLE_QUICK_EDIT_MODE;
+            SetConsoleMode(wp->hConsoleInput, mode);
         }
-        SetConsoleMode(wp->hConsoleInput, mode);
     }
 
     /*
-     * Ignore Ctrl+C in OUR process so that GenerateConsoleCtrlEvent()
-     * only affects the child.  We deliver Ctrl+C manually when the
-     * user presses it.
+     * Ctrl+C handling:
+     * - piped stdin: ignore in parent, deliver manually to child
+     * - console stdin: keep default handling so child receives Ctrl+C
      */
-    SetConsoleCtrlHandler(NULL, TRUE);
+    if (wp_process_stdin_is_pipe(&wp->process)) {
+        SetConsoleCtrlHandler(NULL, TRUE);
+    } else {
+        SetConsoleCtrlHandler(NULL, FALSE);
+    }
 
     /*
      * Resume the child process. It was created suspended so the console
@@ -913,18 +956,28 @@ int wp_spawn_shell(WinPatina* wp)
         return -1;
     }
 
-    if (!wp_process_spawn_shell(&wp->process,
-                                wp->caps.screen_width,
-                                wp->caps.screen_height)) {
+    const char* comspec = getenv("COMSPEC");
+    if (comspec == NULL || comspec[0] == '\0') {
+        comspec = "cmd.exe";
+    }
+
+    if (!wp_process_spawn_ex(&wp->process, comspec,
+                             wp->caps.screen_width,
+                             wp->caps.screen_height,
+                             false,  /* console stderr */
+                             true)) { /* console stdin */
         return -1;
     }
 
-    /* Enable local echo for the default shell.
-     * cmd.exe through pipes does not echo typed characters, so we
-     * buffer and echo locally.  The child's own command echo is
-     * silently consumed (skipping_echo) to avoid duplication. */
-    wp->local_echo = true;
+    /*
+     * With console stdin passthrough, cmd.exe performs its own line
+     * editing/echo. Disable local line discipline in WinPatina.
+     */
+    wp->local_echo = false;
     wp->line_len = 0;
+    wp->line_cols = 0;
+    wp->skipping_echo = false;
+    wp->command_running = false;
 
     int rc = post_spawn_setup(wp);
     if (rc != 0) return rc;
@@ -937,7 +990,7 @@ int wp_spawn_shell(WinPatina* wp)
         char bar[512];
         int content_len = snprintf(bar, sizeof(bar),
             "\x1b" "[44;97m"   /* SGR: blue bg (44), bright white fg (97) */
-            " WinPatina v%s - exit by pressing Ctrl+D or typing exit",
+            " WinPatina v%s - type exit to close this shell",
             wp_version_string());
 
         /* Pad with spaces to fill the row */
@@ -981,10 +1034,43 @@ int wp_get_exit_code(WinPatina* wp)
 /** Read buffer for child output */
 #define WP_READ_BUF_SIZE 4096
 
+static void apply_console_resize_if_changed(WinPatina* wp, SHORT new_w, SHORT new_h)
+{
+    if (new_w <= 0 || new_h <= 0) return;
+
+    /* Ignore stale resize notifications. */
+    if (new_w == wp->caps.screen_width &&
+        new_h == wp->caps.screen_height) {
+        return;
+    }
+
+    wp->caps.screen_width = new_w;
+    wp->caps.screen_height = new_h;
+
+    if (wp->screen != NULL) {
+        wp_screen_resize(wp->screen, new_w, new_h);
+        wp_renderer_resize(&wp->renderer);
+        wp_renderer_paint_all(&wp->renderer);
+    }
+
+    /* Keep child's stderr CSBI path in sync with viewport size. */
+    wp_process_update_stderr_size(&wp->process, new_w, new_h);
+}
+
 int wp_poll(WinPatina* wp, int timeout_ms)
 {
     if (wp == NULL) return -1;
     if (!wp->pipeline_ready) return -1;
+
+    const bool capture_input = wp_process_stdin_is_pipe(&wp->process);
+    DWORD effective_wait;
+    if (timeout_ms < 0) {
+        effective_wait = 16;
+    } else if ((DWORD)timeout_ms > 16) {
+        effective_wait = 16;
+    } else {
+        effective_wait = (DWORD)timeout_ms;
+    }
 
     /*
      * Wait for console input events.
@@ -1000,24 +1086,18 @@ int wp_poll(WinPatina* wp, int timeout_ms)
      * The wait is capped at 16 ms (~60 Hz) so that child output is
      * picked up promptly even when no console events arrive.
      */
-    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
-        DWORD effective_wait;
-        if (timeout_ms < 0) {
-            effective_wait = 16;
-        } else if ((DWORD)timeout_ms > 16) {
-            effective_wait = 16;
-        } else {
-            effective_wait = (DWORD)timeout_ms;
-        }
+    if (capture_input && wp->hConsoleInput != INVALID_HANDLE_VALUE) {
         WaitForSingleObject(wp->hConsoleInput, effective_wait);
     } else if (!wp_process_is_running(&wp->process)) {
-        return 1;  /* No console and child not running */
+        return 1;  /* Child not running */
+    } else if (effective_wait > 0) {
+        Sleep(effective_wait);
     }
 
     /*
      * Process console input events (keyboard, mouse, resize).
      */
-    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
+    if (capture_input && wp->hConsoleInput != INVALID_HANDLE_VALUE) {
         DWORD events_available = 0;
         GetNumberOfConsoleInputEvents(wp->hConsoleInput, &events_available);
 
@@ -1073,34 +1153,7 @@ int wp_poll(WinPatina* wp, int timeout_ms)
                         new_h = ir.Event.WindowBufferSizeEvent.dwSize.Y;
                     }
 
-                    if (new_w <= 0 || new_h <= 0) {
-                        break;
-                    }
-
-                    /* Skip stale events where dimensions haven't changed.
-                     * post_spawn_setup resizes the console buffer, which
-                     * queues WINDOW_BUFFER_SIZE_EVENT entries.  Without
-                     * this guard each stale event triggers a full repaint
-                     * (emit_vt_clear under conpty), duplicating content. */
-                    if (new_w == wp->caps.screen_width &&
-                        new_h == wp->caps.screen_height) {
-                        break;
-                    }
-
-                    /* Update screen size tracking */
-                    wp->caps.screen_width = new_w;
-                    wp->caps.screen_height = new_h;
-
-                    /* Resize screen buffer and renderer */
-                    if (wp->screen != NULL) {
-                        wp_screen_resize(wp->screen, new_w, new_h);
-                        wp_renderer_resize(&wp->renderer);
-                        wp_renderer_paint_all(&wp->renderer);
-                    }
-
-                    /* Update the stderr console buffer so the child's
-                     * CSBI queries reflect the new dimensions. */
-                    wp_process_update_stderr_size(&wp->process, new_w, new_h);
+                    apply_console_resize_if_changed(wp, new_w, new_h);
                     break;
                 }
 
@@ -1112,6 +1165,17 @@ int wp_poll(WinPatina* wp, int timeout_ms)
             if (vt_len > 0) {
                 write_to_child(&wp->process, vt_buf, vt_len);
             }
+        }
+    } else if (wp->hConsoleOutput != INVALID_HANDLE_VALUE) {
+        /*
+         * Child owns console input; poll viewport size directly so
+         * renderer dimensions still track window resizes.
+         */
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(wp->hConsoleOutput, &csbi)) {
+            SHORT new_w = (SHORT)(csbi.srWindow.Right - csbi.srWindow.Left + 1);
+            SHORT new_h = (SHORT)(csbi.srWindow.Bottom - csbi.srWindow.Top + 1);
+            apply_console_resize_if_changed(wp, new_w, new_h);
         }
     }
 
@@ -1145,8 +1209,43 @@ int wp_poll(WinPatina* wp, int timeout_ms)
 
             /* Feed remaining bytes through parser */
             if (offset < n) {
+                wp->last_child_output_tick = GetTickCount();
                 wp_vt_parser_feed(&wp->parser,
                                   read_buf + offset, n - offset);
+            }
+        }
+    }
+
+    /*
+     * Restore local echo when a command has finished.
+     *
+     * After Enter sends a command, local_echo is disabled so that
+     * raw keystrokes reach the child (essential for TUI apps).
+     * We restore local echo when ALL of:
+     *   - A command was running (command_running is true)
+     *   - The echo skip has completed
+     *   - No TUI modes are active (not in alternate screen,
+     *     no mouse tracking, cursor keys in normal mode)
+     *   - The child has been idle for at least 200 ms
+     *
+     * This detects the return to a cmd.exe prompt after a command
+     * finishes, even if the child (e.g., a TUI app using direct
+     * console APIs) never sent DECSET sequences through the pipe.
+     */
+    if (wp->command_running && !wp->skipping_echo && !wp->local_echo) {
+        bool tui_active = false;
+        if (wp->screen != NULL && wp->screen->using_alternate)
+            tui_active = true;
+        if (wp->input.mouse_mode != WP_MOUSE_OFF)
+            tui_active = true;
+        if (wp->input.cursor_key_mode != WP_CURSOR_KEY_NORMAL)
+            tui_active = true;
+
+        if (!tui_active) {
+            DWORD elapsed = GetTickCount() - wp->last_child_output_tick;
+            if (elapsed >= 200) {
+                wp->local_echo = true;
+                wp->command_running = false;
             }
         }
     }
@@ -1236,9 +1335,11 @@ void wp_set_mouse_enabled(WinPatina* wp, bool enabled)
         wp->input.mouse_mode = WP_MOUSE_OFF;
     }
 
-    /* Update console input mode */
-    if (wp->hConsoleInput != INVALID_HANDLE_VALUE) {
-        DWORD mode = ENABLE_WINDOW_INPUT;
+    /* Update console input mode only when WinPatina is translating input. */
+    if (wp->hConsoleInput != INVALID_HANDLE_VALUE &&
+        (!wp_process_is_running(&wp->process) ||
+         wp_process_stdin_is_pipe(&wp->process))) {
+        DWORD mode = ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS;
         if (enabled) {
             mode |= ENABLE_MOUSE_INPUT;
         }
