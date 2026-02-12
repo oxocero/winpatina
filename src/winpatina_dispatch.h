@@ -19,6 +19,7 @@
 #include "winpatina_vt_parser.h"
 #include "winpatina_screen.h"
 #include "winpatina_colour.h"
+#include "winpatina_input.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +69,22 @@ typedef struct {
     uint32_t last_print;
 
     /**
+     * Input handler state.
+     * Dispatch sets mouse/keyboard modes here when processing
+     * DECSET/DECRST sequences from the child's output.
+     * May be NULL if input handling is not active.
+     */
+    WPInputState* input;
+
+    /**
+     * Console input handle.
+     * Used to toggle ENABLE_MOUSE_INPUT when the child
+     * enables/disables mouse tracking via DECSET/DECRST.
+     * May be INVALID_HANDLE_VALUE if not available.
+     */
+    HANDLE hConsoleInput;
+
+    /**
      * Write-back callback for query responses (DSR, DA, etc.)
      * May be NULL if no write-back channel is available.
      */
@@ -84,16 +101,20 @@ typedef struct {
 /**
  * @brief Initialise the dispatch state
  *
- * Sets up the dispatch handler with references to the screen buffer
- * and initial colour state derived from the default attributes.
+ * Sets up the dispatch handler with references to the screen buffer,
+ * input state, and initial colour state derived from the default
+ * attributes.
  *
  * @param state          Dispatch state to initialise
  * @param screen         Screen buffer to operate on
  * @param default_attrs  Default Win32 console attributes
  * @param has_lvb        True if LVB attributes (underline) are available
+ * @param input          Input handler state (may be NULL)
+ * @param hConsoleInput  Console input handle (INVALID_HANDLE_VALUE if N/A)
  */
 void wp_dispatch_init(WPDispatchState* state, WPScreenBuffer* screen,
-                      WORD default_attrs, bool has_lvb);
+                      WORD default_attrs, bool has_lvb,
+                      WPInputState* input, HANDLE hConsoleInput);
 
 /**
  * @brief Attach the dispatch handler to a VT parser

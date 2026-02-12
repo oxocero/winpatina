@@ -65,7 +65,8 @@ int main(void)
     WPDispatchState dispatch;
     WPRenderer renderer;
 
-    wp_dispatch_init(&dispatch, screen, default_attrs, has_lvb);
+    wp_dispatch_init(&dispatch, screen, default_attrs, has_lvb,
+                     NULL, INVALID_HANDLE_VALUE);
     wp_vt_parser_init(&parser, NULL);
     wp_dispatch_attach(&dispatch, &parser);
 

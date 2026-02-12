@@ -195,7 +195,8 @@ WinPatina* wp_init(const WinPatinaConfig* config)
         }
 
         /* Dispatch (parser callbacks -> screen operations) */
-        wp_dispatch_init(&wp->dispatch, wp->screen, default_attrs, has_lvb);
+        wp_dispatch_init(&wp->dispatch, wp->screen, default_attrs, has_lvb,
+                         &wp->input, wp->hConsoleInput);
 
         /* VT parser */
         wp_vt_parser_init(&wp->parser, NULL);

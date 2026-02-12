@@ -259,6 +259,57 @@ static void handle_sgr(WPDispatchState* state, const WPVTParser* parser)
  *============================================================================*/
 
 /**
+ * Update ENABLE_MOUSE_INPUT on the console input handle.
+ *
+ * Called when the child enables or disables mouse tracking.
+ * When mouse_mode is anything other than WP_MOUSE_OFF we need
+ * ENABLE_MOUSE_INPUT so that ReadConsoleInput delivers mouse events.
+ */
+static void update_console_mouse_flag(WPDispatchState* state, bool want_mouse)
+{
+    if (state->hConsoleInput == NULL ||
+        state->hConsoleInput == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    DWORD mode = 0;
+    if (!GetConsoleMode(state->hConsoleInput, &mode)) {
+        return;
+    }
+
+    if (want_mouse) {
+        mode |= ENABLE_MOUSE_INPUT;
+    } else {
+        mode &= ~(DWORD)ENABLE_MOUSE_INPUT;
+    }
+    SetConsoleMode(state->hConsoleInput, mode);
+}
+
+/**
+ * Set the mouse tracking mode on the input handler.
+ *
+ * When enabling a tracking mode we also ensure ENABLE_MOUSE_INPUT is
+ * set on the console.  When disabling (any mode set to off) we clear
+ * the flag if no tracking is active.
+ */
+static void set_mouse_tracking(WPDispatchState* state,
+                                WPMouseMode mode_val, bool enable)
+{
+    if (state->input == NULL) return;
+
+    if (enable) {
+        state->input->mouse_mode = mode_val;
+        update_console_mouse_flag(state, true);
+    } else {
+        /* Only turn off if the current mode matches what's being reset */
+        if (state->input->mouse_mode == mode_val) {
+            state->input->mouse_mode = WP_MOUSE_OFF;
+            update_console_mouse_flag(state, false);
+        }
+    }
+}
+
+/**
  * Handle CSI ? ... h (DECSET) and CSI ? ... l (DECRST).
  *
  * @param state   Dispatch state
@@ -272,8 +323,49 @@ static void handle_private_mode(WPDispatchState* state,
         int mode = wp_vt_get_param(parser, i, 0);
 
         switch (mode) {
+        case 1: /* DECCKM - cursor key mode */
+            if (state->input != NULL) {
+                state->input->cursor_key_mode = enable
+                    ? WP_CURSOR_KEY_APPLICATION
+                    : WP_CURSOR_KEY_NORMAL;
+            }
+            break;
+
+        case 9: /* X10 mouse tracking (button press only) */
+            set_mouse_tracking(state, WP_MOUSE_X10, enable);
+            break;
+
         case 25: /* DECTCEM - cursor visibility */
             wp_screen_active(state->screen)->cursor.visible = enable;
+            break;
+
+        case 47:  /* Alternate screen (older form, no save/restore) */
+        case 1047:
+            if (enable) {
+                wp_screen_enter_alternate(state->screen);
+            } else {
+                wp_screen_leave_alternate(state->screen);
+            }
+            break;
+
+        case 1000: /* Normal mouse tracking (press + release) */
+            set_mouse_tracking(state, WP_MOUSE_NORMAL, enable);
+            break;
+
+        case 1002: /* Button-event tracking (press, release, drag) */
+            set_mouse_tracking(state, WP_MOUSE_BUTTON, enable);
+            break;
+
+        case 1003: /* Any-event tracking (all motion) */
+            set_mouse_tracking(state, WP_MOUSE_ANY, enable);
+            break;
+
+        case 1006: /* SGR extended mouse encoding */
+            if (state->input != NULL) {
+                state->input->mouse_encoding = enable
+                    ? WP_MOUSE_ENC_SGR
+                    : WP_MOUSE_ENC_DEFAULT;
+            }
             break;
 
         case 1049: /* Alternate screen buffer */
@@ -284,12 +376,9 @@ static void handle_private_mode(WPDispatchState* state,
             }
             break;
 
-        case 47:  /* Alternate screen (older form, no save/restore) */
-        case 1047:
-            if (enable) {
-                wp_screen_enter_alternate(state->screen);
-            } else {
-                wp_screen_leave_alternate(state->screen);
+        case 2004: /* Bracketed paste mode */
+            if (state->input != NULL) {
+                state->input->bracketed_paste = enable;
             }
             break;
 
@@ -784,13 +873,16 @@ static void dispatch_osc(void* user_data, const WPVTParser* parser)
  *============================================================================*/
 
 void wp_dispatch_init(WPDispatchState* state, WPScreenBuffer* screen,
-                      WORD default_attrs, bool has_lvb)
+                      WORD default_attrs, bool has_lvb,
+                      WPInputState* input, HANDLE hConsoleInput)
 {
     memset(state, 0, sizeof(*state));
     state->screen = screen;
     state->default_attrs = default_attrs;
     state->has_lvb = has_lvb;
     state->last_print = 0;
+    state->input = input;
+    state->hConsoleInput = hConsoleInput;
     state->on_write_back = NULL;
     state->write_back_data = NULL;
 
