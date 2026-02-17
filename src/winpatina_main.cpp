@@ -23,6 +23,9 @@
 static thread_local char tls_error_buffer[WP_ERROR_BUFFER_SIZE];
 static thread_local bool tls_error_set = false;
 
+/* Local-echo surrogate accumulation for supplementary plane input. */
+static thread_local WCHAR tls_local_echo_high_surrogate = 0;
+
 void wp_set_error(const char* message)
 {
     if (message == NULL) {
@@ -622,11 +625,38 @@ static void handle_local_echo_key(WinPatina* wp,
     if (!event->bKeyDown) return;
 
     WCHAR uc = event->uChar.UnicodeChar;
+    uint32_t cp = 0;
+    bool has_cp = false;
+
+    /*
+     * Win32 emits supplementary characters as UTF-16 surrogate pairs
+     * across two key events. Accumulate and combine them before UTF-8
+     * encoding so local echo does not emit invalid UTF-8.
+     */
+    if (uc >= 0xD800 && uc <= 0xDBFF) {
+        tls_local_echo_high_surrogate = uc;
+        return;
+    }
+    if (uc >= 0xDC00 && uc <= 0xDFFF) {
+        if (tls_local_echo_high_surrogate != 0) {
+            cp = 0x10000u
+               + (((uint32_t)tls_local_echo_high_surrogate - 0xD800u) << 10)
+               + ((uint32_t)uc - 0xDC00u);
+            has_cp = true;
+            tls_local_echo_high_surrogate = 0;
+        } else {
+            return;  /* Orphan low surrogate */
+        }
+    } else {
+        tls_local_echo_high_surrogate = 0;
+        cp = (uint32_t)uc;
+        has_cp = true;
+    }
 
     /* Printable character */
-    if (uc >= 0x20 && uc != 0x7F) {
+    if (has_cp && cp >= 0x20 && cp != 0x7F) {
         uint8_t utf8[4];
-        int n = encode_utf8_echo(utf8, (uint32_t)uc);
+        int n = encode_utf8_echo(utf8, cp);
         if (n > 0 && wp->line_len + n < (int)sizeof(wp->line_buf)) {
             memcpy(wp->line_buf + wp->line_len, utf8, n);
             wp->line_len += n;
