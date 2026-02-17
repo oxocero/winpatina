@@ -142,7 +142,7 @@ struct WinPatina {
     UINT original_input_cp;
 
     /*==================================================================
-     * Pipeline Components (initialised when mode == WIN32_TRANSLATION)
+     * Pipeline Components (initialised for active runtime modes)
      *==================================================================*/
 
     /** Screen buffer — cell grid + cursor + scroll regions */

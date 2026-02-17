@@ -173,6 +173,7 @@ WinPatina* wp_init(const WinPatinaConfig* config)
      * go straight to the terminal.
      */
     if (wp->caps.mode == WP_MODE_WIN32_TRANSLATION ||
+        wp->caps.mode == WP_MODE_VT_PASSTHROUGH ||
         wp->caps.mode == WP_MODE_HYBRID) {
 
         WORD default_attrs = 0x07;  /* White on black fallback */
