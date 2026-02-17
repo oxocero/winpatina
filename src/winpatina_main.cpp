@@ -385,6 +385,103 @@ static void write_to_child(WPProcess* process, const uint8_t* buf, int len)
     }
 }
 
+/** Append one character to a command line buffer. */
+static bool cmdline_append_char(char* buf, size_t cap, int* pos, char ch)
+{
+    if (buf == NULL || cap == 0 || pos == NULL) return false;
+    if (*pos < 0) return false;
+    if ((size_t)(*pos) >= cap - 1) return false;
+    buf[*pos] = ch;
+    (*pos)++;
+    buf[*pos] = '\0';
+    return true;
+}
+
+/**
+ * Append one argv token using Win32 quoting rules.
+ *
+ * Mirrors CommandLineToArgvW-compatible escaping:
+ * - Wrap in quotes when needed
+ * - Backslashes before quotes are doubled
+ * - Trailing backslashes in quoted args are doubled
+ */
+static bool cmdline_append_arg(char* buf, size_t cap, int* pos, const char* arg)
+{
+    if (arg == NULL) {
+        arg = "";
+    }
+
+    bool need_quotes = (*arg == '\0');
+    if (!need_quotes) {
+        for (const char* p = arg; *p != '\0'; p++) {
+            if (*p == ' ' || *p == '\t' || *p == '"') {
+                need_quotes = true;
+                break;
+            }
+        }
+    }
+
+    if (!need_quotes) {
+        for (const char* p = arg; *p != '\0'; p++) {
+            if (!cmdline_append_char(buf, cap, pos, *p)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (!cmdline_append_char(buf, cap, pos, '"')) {
+        return false;
+    }
+
+    const char* p = arg;
+    while (*p != '\0') {
+        int slash_count = 0;
+        while (*p == '\\') {
+            slash_count++;
+            p++;
+        }
+
+        if (*p == '"') {
+            for (int i = 0; i < slash_count * 2 + 1; i++) {
+                if (!cmdline_append_char(buf, cap, pos, '\\')) {
+                    return false;
+                }
+            }
+            if (!cmdline_append_char(buf, cap, pos, '"')) {
+                return false;
+            }
+            p++;
+            continue;
+        }
+
+        if (*p == '\0') {
+            for (int i = 0; i < slash_count * 2; i++) {
+                if (!cmdline_append_char(buf, cap, pos, '\\')) {
+                    return false;
+                }
+            }
+            break;
+        }
+
+        for (int i = 0; i < slash_count; i++) {
+            if (!cmdline_append_char(buf, cap, pos, '\\')) {
+                return false;
+            }
+        }
+        if (!cmdline_append_char(buf, cap, pos, *p)) {
+            return false;
+        }
+        p++;
+    }
+
+    if (!cmdline_append_char(buf, cap, pos, '"')) {
+        return false;
+    }
+
+    return true;
+}
+
 /*============================================================================
  * Local Echo / Line Discipline
  *
@@ -917,21 +1014,26 @@ int wp_spawn(WinPatina* wp, const char* command, char* const argv[])
     }
 
     /*
-     * Build a command line from command + argv.
-     * Windows expects a single command line string, not separate args.
+     * Build a command line from command + argv using Windows-compatible
+     * quoting/escaping (spaces, quotes, trailing backslashes).
      */
     char cmdline[4096];
     int pos = 0;
+    cmdline[0] = '\0';
 
-    /* Start with the command itself */
-    pos += snprintf(cmdline + pos, sizeof(cmdline) - pos, "%s", command);
+    /* First token is the executable/command */
+    if (!cmdline_append_arg(cmdline, sizeof(cmdline), &pos, command)) {
+        wp_set_error("Command line too long");
+        return -1;
+    }
 
     /* Append arguments if provided */
     if (argv != NULL) {
         for (int i = 0; argv[i] != NULL; i++) {
-            if (pos < (int)sizeof(cmdline) - 1) {
-                pos += snprintf(cmdline + pos, sizeof(cmdline) - pos,
-                                " %s", argv[i]);
+            if (!cmdline_append_char(cmdline, sizeof(cmdline), &pos, ' ') ||
+                !cmdline_append_arg(cmdline, sizeof(cmdline), &pos, argv[i])) {
+                wp_set_error("Command line too long");
+                return -1;
             }
         }
     }
