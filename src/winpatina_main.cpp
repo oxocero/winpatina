@@ -790,7 +790,10 @@ static void handle_local_echo_key(WinPatina* wp,
     /* Up arrow — recall previous command from history */
     WORD vk = event->wVirtualKeyCode;
     if (vk == VK_UP) {
-        if (wp->history_count == 0 || wp->history_pos <= 0) return;
+        if (wp->history_count == 0) return;
+        int oldest_pos = wp->history_count - WP_HISTORY_MAX;
+        if (oldest_pos < 0) oldest_pos = 0;
+        if (wp->history_pos <= oldest_pos) return;
         wp->history_pos--;
         int slot = wp->history_pos % WP_HISTORY_MAX;
         if (wp->history[slot] != NULL) {
