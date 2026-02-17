@@ -64,7 +64,15 @@ static void push_param(WPVTParser* parser)
 /** Accumulate a digit (0x30-0x39) into the current parameter */
 static void collect_digit(WPVTParser* parser, uint8_t byte)
 {
-    parser->current_param = parser->current_param * 10 + (byte - '0');
+    const int digit = (int)(byte - '0');
+
+    /* Saturating decimal accumulation (cap at 65535) without overflow. */
+    if (parser->current_param > 6553 ||
+        (parser->current_param == 6553 && digit > 5)) {
+        parser->current_param = 65535;
+    } else {
+        parser->current_param = parser->current_param * 10 + digit;
+    }
     parser->param_has_value = true;
 
     /* Cap to prevent integer overflow on malformed input */

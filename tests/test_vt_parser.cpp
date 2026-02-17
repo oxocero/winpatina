@@ -439,6 +439,19 @@ TEST(csi_param_overflow_capped) {
     ASSERT_TRUE(state.csis[0].params[0] <= 65535);
 }
 
+TEST(csi_param_overflow_many_digits_capped) {
+    /* Very long numeric parameter should remain safely capped at 65535. */
+    WPVTParser parser;
+    TestCallbackState state;
+    setup_parser(&parser, &state);
+
+    feed(&parser, "\x1b[999999999999999999999999999999999999999m");
+
+    ASSERT_EQ((int)state.csis.size(), 1);
+    ASSERT_EQ(state.csis[0].param_count, 1);
+    ASSERT_EQ(state.csis[0].params[0], 65535);
+}
+
 /*============================================================================
  * Tests - CSI Malformed / Ignore
  *============================================================================*/
