@@ -703,6 +703,24 @@ TEST(utf8_surrogate_rejected) {
     ASSERT_EQ(state.prints[0].codepoint, (uint32_t)0xFFFD);
 }
 
+TEST(utf8_invalid_continuation_resyncs) {
+    /*
+     * Start a 2-byte sequence, then interrupt with ASCII.
+     * Expected output:
+     *   U+FFFD for the broken sequence, then the ASCII character.
+     */
+    WPVTParser parser;
+    TestCallbackState state;
+    setup_parser(&parser, &state);
+
+    uint8_t data[] = { 0xC2, 'A' };
+    feed_bytes(&parser, data, sizeof(data));
+
+    ASSERT_EQ((int)state.prints.size(), 2);
+    ASSERT_EQ(state.prints[0].codepoint, (uint32_t)0xFFFD);
+    ASSERT_EQ(state.prints[1].codepoint, (uint32_t)'A');
+}
+
 /*============================================================================
  * Tests - Chunked Input
  *============================================================================*/

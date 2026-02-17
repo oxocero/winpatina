@@ -361,6 +361,23 @@ void wp_vt_parser_feed(WPVTParser* parser, const uint8_t* data, size_t len)
 
         /*=== GROUND: Normal text processing ===*/
         case WP_VT_GROUND:
+            /*
+             * If we're mid UTF-8 sequence, the next byte must be a
+             * continuation byte. If not, emit U+FFFD for the broken
+             * sequence and re-interpret this byte as fresh input.
+             */
+            if (parser->utf8_expected > 0) {
+                if ((byte & 0xC0) == 0x80) {
+                    parser->utf8_buffer[parser->utf8_received++] = byte;
+                    if (parser->utf8_received == parser->utf8_expected) {
+                        utf8_complete(parser);
+                    }
+                    break;
+                }
+                do_print(parser, 0xFFFD);
+                utf8_reset(parser);
+            }
+
             if (byte < 0x20) {
                 /* C0 control character */
                 if (is_c0_executable(byte)) {
@@ -391,13 +408,6 @@ void wp_vt_parser_feed(WPVTParser* parser, const uint8_t* data, size_t len)
                 parser->utf8_buffer[0] = byte;
                 parser->utf8_expected = 4;
                 parser->utf8_received = 1;
-            }
-            else if ((byte & 0xC0) == 0x80 && parser->utf8_expected > 0) {
-                /* UTF-8 continuation byte (10xxxxxx) */
-                parser->utf8_buffer[parser->utf8_received++] = byte;
-                if (parser->utf8_received == parser->utf8_expected) {
-                    utf8_complete(parser);
-                }
             }
             else {
                 /* Invalid byte or unexpected continuation */
