@@ -138,6 +138,9 @@ struct WPScreenBuffer {
      */
     bool* dirty_rows;
 
+    /** Fast-path aggregate: true when any dirty row is present. */
+    bool has_dirty_rows;
+
     /** True if a full repaint is needed (e.g., after resize) */
     bool full_repaint;
 

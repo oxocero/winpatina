@@ -103,6 +103,7 @@ WPScreenBuffer* wp_screen_create(int width, int height, WORD default_attrs)
 
     /* Mark everything dirty for initial render */
     screen->full_repaint = true;
+    screen->has_dirty_rows = true;
 
     return screen;
 }
@@ -408,7 +409,7 @@ void wp_screen_scroll(WPScreenBuffer* screen, int lines)
 
     /* Mark all rows in the scroll region as dirty */
     for (int y = top; y <= bottom; y++) {
-        screen->dirty_rows[y] = true;
+        wp_screen_mark_dirty(screen, y);
     }
 }
 
@@ -524,7 +525,10 @@ void wp_screen_delete_chars(WPScreenBuffer* screen, int count)
 void wp_screen_mark_dirty(WPScreenBuffer* screen, int y)
 {
     if (screen != NULL && y >= 0 && y < screen->height) {
-        screen->dirty_rows[y] = true;
+        if (!screen->dirty_rows[y]) {
+            screen->dirty_rows[y] = true;
+            screen->has_dirty_rows = true;
+        }
     }
 }
 
@@ -535,6 +539,7 @@ void wp_screen_mark_all_clean(WPScreenBuffer* screen)
     }
 
     memset(screen->dirty_rows, 0, sizeof(bool) * (size_t)screen->height);
+    screen->has_dirty_rows = false;
     screen->full_repaint = false;
 }
 
@@ -545,6 +550,7 @@ void wp_screen_mark_all_dirty(WPScreenBuffer* screen)
     }
 
     memset(screen->dirty_rows, 1, sizeof(bool) * (size_t)screen->height);
+    screen->has_dirty_rows = (screen->height > 0);
     screen->full_repaint = true;
 }
 

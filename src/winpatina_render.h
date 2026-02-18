@@ -39,14 +39,23 @@ typedef struct {
     /** Main screen buffer to render from (active buffer resolved internally) */
     WPScreenBuffer* screen;
 
-    /** Pre-allocated CHAR_INFO buffer, sized for one full row */
+    /** Pre-allocated CHAR_INFO buffer, sized for row_buf_width * row_buf_rows */
     CHAR_INFO* row_buf;
 
     /** Width of the allocated row buffer */
     int row_buf_width;
 
+    /** Number of rows currently allocated in row_buf */
+    int row_buf_rows;
+
     /** Cached cursor position to minimise API calls */
     COORD last_cursor_pos;
+
+    /** Cached logical cursor X (without viewport offset) */
+    int last_cursor_x;
+
+    /** Cached logical cursor Y (without viewport offset) */
+    int last_cursor_y;
 
     /** Cached cursor visibility */
     bool last_cursor_visible;

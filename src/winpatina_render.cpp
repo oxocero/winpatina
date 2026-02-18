@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 /*============================================================================
  * Internal Helpers
@@ -158,6 +159,35 @@ static void write_bytes(HANDLE handle, const char* data, int len)
     DWORD written = 0;
     WriteFile(handle, data, (DWORD)len, &written, NULL);
     (void)written;
+}
+
+/** Ensure row buffer can hold width*rows CHAR_INFO entries. */
+static bool ensure_row_capacity(WPRenderer* renderer, int width, int rows)
+{
+    if (renderer == NULL || width <= 0 || rows <= 0) {
+        return false;
+    }
+    if (renderer->row_buf != NULL &&
+        renderer->row_buf_width == width &&
+        renderer->row_buf_rows >= rows) {
+        return true;
+    }
+
+    size_t cells = (size_t)width * (size_t)rows;
+    if ((size_t)rows != 0 && cells / (size_t)rows != (size_t)width) {
+        return false;  /* overflow */
+    }
+
+    CHAR_INFO* new_buf = (CHAR_INFO*)realloc(
+        renderer->row_buf, sizeof(CHAR_INFO) * cells);
+    if (new_buf == NULL) {
+        return false;
+    }
+
+    renderer->row_buf = new_buf;
+    renderer->row_buf_width = width;
+    renderer->row_buf_rows = rows;
+    return true;
 }
 
 /** Ensure the VT overlay scratch buffer can hold at least min_cap bytes. */
@@ -311,11 +341,7 @@ bool wp_renderer_init(WPRenderer* renderer, HANDLE console_handle,
 
     /* Allocate row buffer for the active screen width */
     WPScreenBuffer* active = wp_screen_active(screen);
-    renderer->row_buf_width = active->width;
-    renderer->row_buf = (CHAR_INFO*)malloc(
-        sizeof(CHAR_INFO) * (size_t)renderer->row_buf_width);
-
-    if (renderer->row_buf == NULL) {
+    if (!ensure_row_capacity(renderer, active->width, 1)) {
         return false;
     }
 
@@ -333,6 +359,7 @@ void wp_renderer_destroy(WPRenderer* renderer)
     renderer->row_buf = NULL;
     renderer->vt_overlay_buf = NULL;
     renderer->row_buf_width = 0;
+    renderer->row_buf_rows = 0;
     renderer->vt_overlay_cap = 0;
 }
 
@@ -348,18 +375,20 @@ void wp_renderer_paint(WPRenderer* renderer)
 
     WPScreenBuffer* active = wp_screen_active(renderer->screen);
 
-    /* Reallocate row buffer if width changed */
-    if (active->width != renderer->row_buf_width) {
-        CHAR_INFO* new_buf = (CHAR_INFO*)realloc(
-            renderer->row_buf,
-            sizeof(CHAR_INFO) * (size_t)active->width);
-        if (new_buf != NULL) {
-            renderer->row_buf = new_buf;
-            renderer->row_buf_width = active->width;
-        } else {
-            /* Allocation failed; skip this paint */
-            return;
-        }
+    /* Fast no-op path: nothing to redraw and cursor state unchanged. */
+    if (!active->full_repaint &&
+        !active->has_dirty_rows &&
+        renderer->cursor_state_valid &&
+        active->cursor.x == renderer->last_cursor_x &&
+        active->cursor.y == renderer->last_cursor_y &&
+        active->cursor.visible == renderer->last_cursor_visible) {
+        return;
+    }
+
+    if (!ensure_row_capacity(renderer, active->width,
+                             renderer->row_buf_rows > 0 ? renderer->row_buf_rows : 1)) {
+        /* Allocation failed; skip this paint */
+        return;
     }
 
     /*
@@ -393,27 +422,51 @@ void wp_renderer_paint(WPRenderer* renderer)
         }
     }
 
-    COORD buf_size;
-    buf_size.X = (SHORT)active->width;
-    buf_size.Y = 1;
-
     COORD buf_origin;
     buf_origin.X = 0;
     buf_origin.Y = 0;
 
-    /* Paint each dirty row. */
-    for (int y = 0; y < active->height; y++) {
+    /*
+     * Paint contiguous dirty-row runs in a single call.
+     * This reduces WriteConsoleOutputW syscall count on sparse updates.
+     */
+    for (int y = 0; y < active->height; ) {
         if (!active->full_repaint && !active->dirty_rows[y]) {
+            y++;
             continue;
         }
 
-        build_row(renderer->row_buf, active, y);
+        int run_start = y;
+        int run_end = y;
+
+        if (active->full_repaint) {
+            run_end = active->height - 1;
+        } else {
+            while (run_end + 1 < active->height &&
+                   active->dirty_rows[run_end + 1]) {
+                run_end++;
+            }
+        }
+
+        int run_h = run_end - run_start + 1;
+        if (!ensure_row_capacity(renderer, active->width, run_h)) {
+            return;
+        }
+
+        for (int ry = 0; ry < run_h; ry++) {
+            build_row(renderer->row_buf + (size_t)ry * (size_t)active->width,
+                      active, run_start + ry);
+        }
+
+        COORD buf_size;
+        buf_size.X = (SHORT)active->width;
+        buf_size.Y = (SHORT)run_h;
 
         SMALL_RECT write_region;
         write_region.Left   = 0;
-        write_region.Top    = (SHORT)(y + viewport_top);
+        write_region.Top    = (SHORT)(run_start + viewport_top);
         write_region.Right  = (SHORT)(active->width - 1);
-        write_region.Bottom = (SHORT)(y + viewport_top);
+        write_region.Bottom = (SHORT)(run_end + viewport_top);
 
         WriteConsoleOutputW(
             renderer->console_handle,
@@ -421,6 +474,8 @@ void wp_renderer_paint(WPRenderer* renderer)
             buf_size,
             buf_origin,
             &write_region);
+
+        y = run_end + 1;
     }
 
     if (renderer->vt_output_enabled &&
@@ -442,6 +497,8 @@ void wp_renderer_paint(WPRenderer* renderer)
 
         SetConsoleCursorPosition(renderer->console_handle, cursor_pos);
         renderer->last_cursor_pos = cursor_pos;
+        renderer->last_cursor_x = active->cursor.x;
+        renderer->last_cursor_y = active->cursor.y;
     }
 
     /* Update cursor visibility */
@@ -486,19 +543,6 @@ bool wp_renderer_resize(WPRenderer* renderer)
     WPScreenBuffer* active = wp_screen_active(renderer->screen);
     int new_width = active->width;
 
-    if (new_width == renderer->row_buf_width) {
-        return true;  /* No change needed */
-    }
-
-    CHAR_INFO* new_buf = (CHAR_INFO*)realloc(
-        renderer->row_buf,
-        sizeof(CHAR_INFO) * (size_t)new_width);
-
-    if (new_buf == NULL) {
-        return false;
-    }
-
-    renderer->row_buf = new_buf;
-    renderer->row_buf_width = new_width;
-    return true;
+    int rows = renderer->row_buf_rows > 0 ? renderer->row_buf_rows : 1;
+    return ensure_row_capacity(renderer, new_width, rows);
 }
