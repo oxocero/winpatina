@@ -59,6 +59,12 @@ typedef struct {
      *  relying on WriteConsoleOutputW-based clearing which conpty's diff
      *  algorithm may not translate correctly. */
     bool vt_output_enabled;
+
+    /** Reusable UTF-8 scratch buffer for VT underline overlay runs. */
+    char* vt_overlay_buf;
+
+    /** Capacity of vt_overlay_buf in bytes. */
+    int vt_overlay_cap;
 } WPRenderer;
 
 /*============================================================================

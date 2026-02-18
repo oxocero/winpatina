@@ -160,6 +160,35 @@ static void write_bytes(HANDLE handle, const char* data, int len)
     (void)written;
 }
 
+/** Ensure the VT overlay scratch buffer can hold at least min_cap bytes. */
+static bool ensure_overlay_capacity(WPRenderer* renderer, int min_cap)
+{
+    if (renderer == NULL || min_cap <= 0) {
+        return false;
+    }
+    if (renderer->vt_overlay_cap >= min_cap && renderer->vt_overlay_buf != NULL) {
+        return true;
+    }
+
+    int new_cap = (renderer->vt_overlay_cap > 0) ? renderer->vt_overlay_cap : 256;
+    while (new_cap < min_cap) {
+        if (new_cap > (INT_MAX / 2)) {
+            new_cap = min_cap;
+            break;
+        }
+        new_cap *= 2;
+    }
+
+    char* new_buf = (char*)realloc(renderer->vt_overlay_buf, (size_t)new_cap);
+    if (new_buf == NULL) {
+        return false;
+    }
+
+    renderer->vt_overlay_buf = new_buf;
+    renderer->vt_overlay_cap = new_cap;
+    return true;
+}
+
 /**
  * Overlay underlined cells using VT output.
  *
@@ -167,9 +196,10 @@ static void write_bytes(HANDLE handle, const char* data, int len)
  * is painted through WriteConsoleOutputW. Re-emitting only underlined spans
  * via VT keeps underline visible while preserving the fast cell renderer.
  */
-static void paint_vt_underline_overlay(HANDLE console_handle,
+static void paint_vt_underline_overlay(WPRenderer* renderer,
                                        WPScreenBuffer* screen)
 {
+    HANDLE console_handle = renderer->console_handle;
     const int width = screen->width;
     const int height = screen->height;
 
@@ -210,12 +240,7 @@ static void paint_vt_underline_overlay(HANDLE console_handle,
             }
 
             /* Each cell contributes up to 4 UTF-8 bytes. */
-            int run_len = x - start;
-            int cap = run_len * 4;
-            char* text = (char*)malloc((size_t)cap);
-            if (text == NULL) {
-                continue;
-            }
+            char* text = renderer->vt_overlay_buf;
 
             int pos = 0;
             for (int i = start; i < x; i++) {
@@ -227,7 +252,6 @@ static void paint_vt_underline_overlay(HANDLE console_handle,
             }
 
             write_bytes(console_handle, text, pos);
-            free(text);
         }
     }
 
@@ -305,8 +329,11 @@ void wp_renderer_destroy(WPRenderer* renderer)
     }
 
     free(renderer->row_buf);
+    free(renderer->vt_overlay_buf);
     renderer->row_buf = NULL;
+    renderer->vt_overlay_buf = NULL;
     renderer->row_buf_width = 0;
+    renderer->vt_overlay_cap = 0;
 }
 
 /*============================================================================
@@ -396,8 +423,9 @@ void wp_renderer_paint(WPRenderer* renderer)
             &write_region);
     }
 
-    if (renderer->vt_output_enabled) {
-        paint_vt_underline_overlay(renderer->console_handle, active);
+    if (renderer->vt_output_enabled &&
+        ensure_overlay_capacity(renderer, active->width * 4)) {
+        paint_vt_underline_overlay(renderer, active);
     }
 
     /* Mark all rows clean */
